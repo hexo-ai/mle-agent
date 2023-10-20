@@ -1,7 +1,0 @@
-name: mle-agent
-channels:
-  - defaults
-dependencies:
-  - python=3.10
-  - pip=23.2.1
-  - packaging
