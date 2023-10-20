@@ -5,16 +5,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from mle_agent.models import LLM
+from .helpers import log
+from .models import LLM
 
 models = {}
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    print("Initializing LLM...")
+    log.info("Initializing LLM...")
     models["LLM"] = LLM()
-    print("LLM initialized", models["LLM"])
+    log.info("LLM initialized", llm_model=models["LLM"])
     yield
     models.clear()
 

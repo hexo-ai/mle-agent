@@ -43,6 +43,7 @@ class LLM:
         prompt: str,
         *,
         model: OpenAIModels = "gpt-3.5-turbo",
+        stream: bool = False
     ) -> str:
         response = openai.ChatCompletion.create(
             model=model,
@@ -54,7 +55,7 @@ You should always return back only code",
                 },
                 {"role": "user", "content": prompt},
             ],
-            stream=False,
+            stream=stream,
         )
         response_content = (
             ChatCompletion.model_validate(response).choices[0].message.content
