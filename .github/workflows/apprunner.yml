@@ -1,0 +1,106 @@
+name: Deploy Image to App Runner
+on: 
+  workflow_call:
+    inputs:
+      repo:
+        description: "Repo used by ECR and used in AppRunner"
+        required: true
+        type: string
+      dir:
+        description: "Directory for package in repository"
+        required: true
+        type: string
+      image:
+        description: "Image ID for ECR"
+        required: true
+        type: string
+      service:
+        description: "App Runner Service Name"
+        required: true
+        type: string
+      port: 
+        description: "Port for App Runner [default: 80]"
+        required: false
+        type: number
+        default: 80
+      cpu: 
+        description: "Number of vCPUs for App Runner [default: 1]"
+        required: false
+        type: number
+        default: 1
+      memory: 
+        description: "Amount of RAM for App Runner [default: 2]"
+        required: false
+        type: number
+        default: 2
+      wait-for-service-stability-seconds:
+        description: "Seconds until it deems the service to be stable. [default: 1200]"
+        required: false
+        type: number
+        default: 1200
+    secrets:
+      DOPPLER_TOKEN:
+        description: "Doppler Token"
+        required: false
+      APP_RUNNER_ROLE_ARN:
+        description: "ARN of the Access Role for deploying the App Runner Service"
+        required: true
+      AWS_ACCESS_KEY_ID:
+        description: "AWS Access Key"
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        description: "AWS Secret Access Key"
+        required: true
+    outputs:
+      service-url:
+        description: "App Runner URL from deployed service"
+        value: ${{ jobs.deploy-to-apprunner.outputs.service-url }}
+      
+
+jobs:
+    deploy-to-apprunner:
+      runs-on: ubuntu-latest
+      env:
+        SERVICE: ${{ inputs.service }}
+      
+      outputs:
+        service-url: ${{ steps.deploy-image.outputs.service_url && format('https://{0}/web', steps.deploy-image.outputs.service_url ) || steps.create-apprunner.outputs.service-url && format('https://{0}/web', steps.create-apprunner.outputs.service-url ) || '' }}
+      
+      steps:
+        - name: Configure AWS credentials
+          uses: aws-actions/configure-aws-credentials@v2
+          with:
+            aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws-region: ap-south-1
+            
+        - name: Check if App Runner Service exists
+          id: if-service
+          run: |
+            service_arn=$( aws apprunner list-services --region ap-southeast-1 | grep $SERVICE | awk '/ServiceArn/ {print $2}' | cut -b 2- | rev | cut -b 3- | rev )
+            echo "service_arn=$service_arn" >> $GITHUB_OUTPUT
+            
+        - name: Create Branch or Tagged Image as App Runner Service
+          id: create-apprunner
+          uses: awslabs/amazon-app-runner-deploy@main
+          if: ${{ steps.if-service.outputs.service_arn == '' }}
+          with:
+            service: ${{ inputs.service }}
+            image: ${{ inputs.image }}
+            access-role-arn: ${{ secrets.APP_RUNNER_ROLE_ARN }}
+            region: ap-southeast-1
+            cpu: ${{ inputs.cpu }}
+            memory: ${{ inputs.memory }}
+            port: ${{ inputs.port }}
+            wait-for-service-stability-seconds: ${{ inputs.wait-for-service-stability-seconds }}
+      
+        - name: Deploy Image to App Runner
+          id: deploy-image
+          if: ${{ steps.if-service.outputs.service_arn != '' }}
+          env:
+            SERVICE_ARN: ${{ steps.if-service.outputs.service_arn }}
+          run: |
+            url=$( aws apprunner describe-service --service-arn $SERVICE_ARN --region ap-southeast-1 | awk '/ServiceUrl/ {print $2}' | cut -b 2- | rev | cut -b 3- | rev )
+            echo "service_url=$url"
+            echo "service_url=$url" >> $GITHUB_OUTPUT
+            aws apprunner start-deployment --service-arn $SERVICE_ARN --region ap-southeast-1

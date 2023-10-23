@@ -1,0 +1,147 @@
+name: Deploy API
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+    branches:
+      - "*"
+      - "!release*"
+    paths:
+      - "api/**"
+  pull_request:
+    tags:
+      - "*.*.*"
+    branches:
+      - "*"
+      - "!release*"
+    paths:
+      - "api/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_type == 'tag' && 'prod' || 'dev' }}
+
+env:
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('{0}-latest', github.ref_name) }}
+  REF_TYPE: ${{ github.ref_type }}
+  NAME: "mle_agent"
+
+jobs:
+  format-vars:
+    name: Format Common Variables
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.format-tag.outputs.tag }}
+
+    steps:
+      - id: format-tag
+        run: |
+          echo "tag=${TAG//[.@_\/]/-}" >> $GITHUB_OUTPUT
+
+  create-branch:
+    name: Create Branch for Tag Release
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Create Branch
+        id: create_branch
+        uses: peterjgrainger/action-create-branch@v2.2.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          branch: ${{ format('release/v{0}', github.ref_name) }}
+          sha: ${{ github.sha }}
+
+
+  build-api:
+    name: Build And Push API to ECR
+    runs-on: ubuntu-latest
+    needs: [format-vars]
+
+    env:
+      REPO: ${{ env.NAME }}-api
+      DIR: api
+
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+      repo: ${{ env.REPO }}
+      dir: ${{ env.DIR }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+          mask-aws-account-id: "false"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.REPO }}
+          TAG: ${{ needs.format-vars.outputs.tag }}
+          IMAGE_TAG: ${{ needs.format-vars.outputs.tag }}-${{ github.sha }}
+          DIR: ./${{ env.DIR }}
+        run: |
+          cd $DIR
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+          if [ $REF_TYPE == 'branch' ]; then
+            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          fi
+          if [ $REF_TYPE == 'tag' ]; then
+            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          fi
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY -a
+
+  ## Cannot realistically DRY the below 2 jobs without doing "clever", unreadable code.
+  deploy-dev-api:
+      name: Deploy Dev API to App Runner
+      needs: [build-api, format-vars]
+      uses: ./.github/workflows/deploy_to_apprunner.yml
+
+      with:
+        repo: ${{ needs.build-api.outputs.repo }}
+        dir: ${{ needs.build-api.outputs.dir }}
+        image: ${{ needs.build-api.outputs.image }}:${{ needs.format-vars.outputs.tag }}
+        service: ${{ needs.build-api.outputs.repo }}-${{ needs.format-vars.outputs.tag }}
+        wait-for-service-stability-seconds: 2500
+
+      secrets:
+        APP_RUNNER_ROLE_ARN: ${{ secrets.APP_RUNNER_ROLE_ARN }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  deploy-prod-api:
+      name: Deploy Prod API to App Runner
+      needs: [build-api]
+      uses: ./.github/workflows/deploy_to_apprunner.yml
+      if: ${{ github.ref_type == 'tag' }}
+
+      with:
+        repo: ${{ needs.build-api.outputs.repo }}
+        dir: ${{ needs.build-api.outputs.dir }}
+        image: ${{ needs.build-api.outputs.image }}:latest
+        service: ${{ needs.build-api.outputs.repo }}-prod
+        wait-for-service-stability-seconds: 2500
+
+      secrets:
+        APP_RUNNER_ROLE_ARN: ${{ secrets.APP_RUNNER_ROLE_ARN }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+

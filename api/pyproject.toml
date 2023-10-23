@@ -21,11 +21,18 @@ jupyterlab = "4.0.6"
 ipykernel = "6.25.2"
 fastapi = {extras = ["all"], version = "^0.104.0"}
 pydantic = "^2.4.2"
-uvicorn = "^0.23.2"
+uvicorn = {extras=["standard"], version="^0.23.2"}
 pydantic-settings = "^2.0.3"
 structlog = "^23.2.0"
 rich = "^13.6.0"
+httpx = "^0.25.0"
+gunicorn = "^21.2.0"
 
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.4.2"
+pytest-cov = "^4.1.0"
+pytest-asyncio = "^0.21.1"
 
 [build-system]
 requires = ["poetry-core"]
