@@ -64,7 +64,7 @@ jobs:
     needs: [format-vars]
 
     env:
-      REPO: ${{ env.NAME }}-api
+      REPO: mle-agent-api
       DIR: api
 
     outputs:
