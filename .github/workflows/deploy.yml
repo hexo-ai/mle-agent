@@ -1,5 +1,4 @@
 name: Deploy API
-
 on:
   push:
     tags:
