@@ -113,7 +113,7 @@ jobs:
   deploy-dev-api:
       name: Deploy Dev API to App Runner
       needs: [build-api, format-vars]
-      uses: ./.github/workflows/deploy_to_apprunner.yml
+      uses: ./.github/workflows/apprunner.yml
 
       with:
         repo: ${{ needs.build-api.outputs.repo }}
@@ -130,7 +130,7 @@ jobs:
   deploy-prod-api:
       name: Deploy Prod API to App Runner
       needs: [build-api]
-      uses: ./.github/workflows/deploy_to_apprunner.yml
+      uses: ./.github/workflows/apprunner.yml
       if: ${{ github.ref_type == 'tag' }}
 
       with:
