@@ -119,6 +119,7 @@ jobs:
         dir: ${{ needs.build-api.outputs.dir }}
         image: ${{ needs.build-api.outputs.image }}:${{ needs.format-vars.outputs.tag }}
         service: ${{ needs.build-api.outputs.repo }}-${{ needs.format-vars.outputs.tag }}
+        port: 8000
         wait-for-service-stability-seconds: 2500
 
       secrets:
@@ -137,6 +138,7 @@ jobs:
         dir: ${{ needs.build-api.outputs.dir }}
         image: ${{ needs.build-api.outputs.image }}:latest
         service: ${{ needs.build-api.outputs.repo }}-prod
+        port: 8000
         wait-for-service-stability-seconds: 2500
 
       secrets:
