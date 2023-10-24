@@ -53,6 +53,10 @@ def init_api() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.get("/")
+    async def health_check():
+        return {"it": "works"}
+
     @app.post("/chat/ask")
     async def ask(request: AskRequest) -> StreamingResponse:
         if (llm := models.get("LLM")) is None:
