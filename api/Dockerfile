@@ -13,7 +13,7 @@ WORKDIR /app
 
 COPY --from=python-base /tmp/requirements.txt /app/requirements.txt
 
-RUN apt-get update; apt-get install -y gcc g++
+RUN apt-get update; apt-get install -y gcc g++ git
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 COPY ./ .

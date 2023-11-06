@@ -9,3 +9,11 @@ run:
 .PHONY: test
 test:
 	poetry run pytest
+
+.PHONY: build
+build:
+	docker-compose -f docker-compose.test.yml build
+
+.PHONE: up
+up: build
+	docker-compose -f docker-compose.test.yml up
