@@ -32,7 +32,9 @@ async def lifespan(_: FastAPI):
 class AskRequest(BaseModel):
     repo_url: str
     query: str
-    start_index_folder_path: str | None
+    start_index_folder_path: str = ""
+    id: str | None = None
+    response_id: str | None = None
 
 
 class AskResponseContext(BaseModel):
@@ -62,15 +64,16 @@ def init_api() -> FastAPI:
 
     @app.post("/chat/ask")
     async def ask(request: AskRequest) -> StreamingResponse:
-        print(request.repo_url)
-        print(request.start_index_folder_path)
+        log.info(request.repo_url)
+        log.info(request.start_index_folder_path)
         pipeline = InferencePipeline(
             repo_url=request.repo_url,
             start_index_folder_path=request.start_index_folder_path,
         )
+        pipeline.clone_and_process_repo()
         return StreamingResponse(
             pipeline.get_response(query=request.query),
-            media_type="application/json",
+            media_type="text/event-stream",
         )
 
     return app
