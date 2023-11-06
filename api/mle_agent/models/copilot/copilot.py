@@ -10,14 +10,17 @@ corpus_df = pd.concat([corpus_df, chunks_with_embeddings_df, chunks_without_embe
 12. Add import statements from the file (NOT DONE)
 13. Integrate to a vector store (NOT DONE)
 """
+import asyncio
 import glob
 import json
-import os
 import textwrap
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any, TypedDict, cast
+from urllib.parse import urlparse
 
+import aiofiles
+import aiofiles.os
 import numpy as np
 import openai
 import pandas as pd
@@ -29,50 +32,64 @@ from ...helpers import log
 from .scripts.code_parser import TreeSitterPythonParser
 
 FloatNDArray = np.ndarray[Any, np.dtype[np.float16]]
+EmbeddingResponseData = TypedDict(
+    "EmbeddingResponseData",
+    {"index": int, "object": str, "embedding": list[float]},
+)
+EmbeddingResponse = TypedDict(
+    "EmbeddingResponse", {"data": list[EmbeddingResponseData]}
+)
 
 openai.api_key = get_settings().openai_api_key
 
 
-def try_clone_repo(
+async def try_clone_repository(
     repo_url: str,
-    repo_path: str,
     *,
-    branches=("master", "main"),
-    depth=1,
+    repo_path: Path,
+    branch: str,
 ):
-    for branch in branches:
-        try:
-            Repo.clone_from(repo_url, repo_path, branch=branch, depth=depth)
-            return  # Exit the function once a successful clone operation is performed
-        except GitCommandError as e:
-            print(f"Failed to clone branch {branch}: {e}")
-    raise ValueError(
-        f"Neither {branches[0]} nor {branches[1]} branches could be found in the repository."
+    try:
+        await asyncio.to_thread(
+            Repo.clone_from,
+            repo_url,
+            repo_path,
+            branch=branch,
+            depth=1,
+        )
+        return
+    except GitCommandError as e:
+        log.info(f"Failed to clone branch {branch}: {e}")
+
+
+async def shallow_clone_repository(repo_url: str, repo_path: Path):
+    if await aiofiles.os.path.exists(repo_path):
+        return
+
+    branches = ("master", "main")
+
+    await asyncio.gather(
+        *[
+            try_clone_repository(repo_url, repo_path=repo_path, branch=branch)
+            for branch in branches
+        ]
     )
+    raise ValueError(f"None of these {branches=} could be found in the repository.")
 
 
-def shallow_clone_repository(repo_url: str, repo_parent_path: Path):
-    repo_name = repo_url.split("/")[-1].split(".")[0]
-    repo_path = f"{repo_parent_path}/{repo_name}"
-    if not os.path.exists(repo_path):
-        try_clone_repo(repo_url=repo_url, repo_path=repo_path)
-    return repo_path
-
-
-def read_document(document_path: str):
-    with open(document_path, "r") as file:
+async def read_and_chunk_document(document_path: str):
+    async with aiofiles.open(document_path, "r") as file:
         try:
-            document = file.read()
+            document = await file.read()
         except UnicodeDecodeError:
             document = ""
-    return document
 
-
-def chunk_document(document: Any):
     parser = TreeSitterPythonParser(document=document)
-    chunks = parser.create_chunks()
-    main_code = parser.extract_main_code()
-    import_statements = parser.extract_import_statements()
+    [chunks, main_code, import_statements] = await asyncio.gather(
+        asyncio.to_thread(parser.create_chunks),
+        asyncio.to_thread(parser.extract_main_code),
+        asyncio.to_thread(parser.extract_import_statements),
+    )
     chunks_df = pd.DataFrame(chunks)
     new_rows = pd.DataFrame(
         [
@@ -82,25 +99,26 @@ def chunk_document(document: Any):
     )
     chunks_df = pd.concat([chunks_df, new_rows], ignore_index=True)
     chunks_df = chunks_df[chunks_df["code"].apply(lambda x: len(x)) != 0]
+    chunks_df["file_path"] = document_path
     return chunks_df
 
 
-def read_and_chunk_all_python_files(directory_path: Path):
-    all_chunks_df = pd.DataFrame()
+async def read_and_chunk_all_python_files(directory_path: Path):
     python_files = glob.glob(f"{directory_path}/**/*.py", recursive=True)
-    for file_path in python_files:
-        document = read_document(file_path)
-        chunks_df = chunk_document(document)
-        chunks_df["file_path"] = file_path
-        all_chunks_df = pd.concat([all_chunks_df, chunks_df], ignore_index=True)
+    all_chunks_df = pd.DataFrame(
+        await asyncio.gather(
+            *[read_and_chunk_document(file) for file in python_files],
+        ),
+    )
     return all_chunks_df
 
 
-def num_tokens(text: str, model: str) -> int:
+async def num_tokens(text: str, model: str) -> int:
     """Return the number of tokens in a string."""
-    encoding = tiktoken.encoding_for_model(model)
-    print(text)
-    return len(encoding.encode(text))
+    encoding = await asyncio.to_thread(tiktoken.encoding_for_model, model)
+    await log.ainfo(text)
+    token_ls = await asyncio.to_thread(encoding.encode, text)
+    return len(token_ls)
 
 
 def parse_embedding(embedding: str | list[str]):
@@ -112,40 +130,42 @@ def parse_embedding(embedding: str | list[str]):
         raise ValueError(f"Unexpected value: {embedding}")
 
 
-def create_openai_embeddings(
-    inputs: list[str], embedding_model_name: str, batch_size=10
+async def create_openai_embedding(
+    batch: list[str],
+    embedding_model_name: str,
 ):
-    embeddings: list[list[float]] = []
-    for batch_start in range(0, len(inputs), batch_size):
-        batch_end = batch_start + batch_size
-        batch = inputs[batch_start:batch_end]
-        batch = [
-            item[:1000] if num_tokens(item, embedding_model_name) > 8192 else item
-            for item in batch
-        ]
-        print(f"Batch {batch_start} to {batch_end-1}")
-        EmbeddingResponseData = TypedDict(
-            "EmbeddingResponseData",
-            {"index": int, "object": str, "embedding": list[float]},
-        )
-        EmbeddingResponse = TypedDict(
-            "EmbeddingResponse", {"data": list[EmbeddingResponseData]}
-        )
-        response = cast(
-            EmbeddingResponse,
-            openai.Embedding.create(model=embedding_model_name, input=batch),
-        )
-        for i, be in enumerate(response["data"]):
-            assert (
-                i == be["index"]
-            )  # double check embeddings are in same order as input
-        batch_embeddings = [e["embedding"] for e in response["data"]]
-        embeddings.extend(batch_embeddings)
-    return embeddings
+    batch = [
+        item[:1000] if await num_tokens(item, embedding_model_name) > 8192 else item
+        for item in batch
+    ]
+    response = cast(
+        EmbeddingResponse,
+        await asyncio.to_thread(
+            openai.Embedding.create, model=embedding_model_name, input=batch
+        ),
+    )
+    for i, be in enumerate(response["data"]):
+        assert i == be["index"]  # double check embeddings are in same order as input
+    return [e["embedding"] for e in response["data"]]
 
 
-def create_query_embedding(query: str, embedding_model_name: str):
-    embeddings = create_openai_embeddings([query], embedding_model_name)
+async def create_openai_embeddings(
+    inputs: list[str],
+    embedding_model_name: str,
+    batch_size=10,
+):
+    batches = [
+        inputs[batch_start : batch_start + batch_size]
+        for batch_start in range(0, len(inputs), batch_size)
+    ]
+
+    return await asyncio.gather(
+        *[create_openai_embedding(batch, embedding_model_name) for batch in batches]
+    )
+
+
+async def create_query_embedding(query: str, embedding_model_name: str):
+    embeddings = await create_openai_embeddings([query], embedding_model_name)
     query_embedding: FloatNDArray = np.array(embeddings[0]).astype(float).reshape(1, -1)
     return query_embedding
 
@@ -212,15 +232,13 @@ class InferencePipeline:
         self,
         repo_url: str,
         repo_parent_path: str | None = None,
-        start_index_folder_path: str | None = None,
+        start_index_folder_path: str = "",
     ):
         self.repo_url = repo_url
         self.repo_parent_path = (
             Path(repo_parent_path) if repo_parent_path else Path.cwd()
         )
-        self.start_index_folder_path = (
-            Path(start_index_folder_path) if start_index_folder_path else None
-        )
+        self.start_index_folder_path = Path(start_index_folder_path)
         columns = [
             "repo_url",
             "file_path",
@@ -233,64 +251,51 @@ class InferencePipeline:
         ]
         self.corpus_df = pd.DataFrame(columns=columns)
 
-    def clone_and_process_repo(self):
-        repo_name = self.repo_url.split("/")[-1].split(".")[0]
-        if os.path.exists(self.repo_parent_path / f"{repo_name}.csv"):
-            self.corpus_df = pd.read_csv(self.repo_parent_path / f"{repo_name}.csv")
-        else:
-            columns = [
-                "repo_url",
-                "file_path",
-                "code",
-                "start_line_num",
-                "end_line_num",
-                "type",
-                "parser_type",
-                "embedding",
-            ]
-            self.corpus_df = pd.DataFrame(columns=columns)
-        log.info("corpus_df", corpus_df=self.corpus_df)
-        if not os.path.exists(self.repo_parent_path / f"{repo_name}.csv"):
-            repo_path = shallow_clone_repository(
-                repo_url=self.repo_url, repo_parent_path=self.repo_parent_path
-            )
-            repo_path = Path(repo_path)
-            directory_path = (
-                self.repo_parent_path / self.start_index_folder_path
-                if self.start_index_folder_path
-                else repo_path
-            )
-            all_chunks_df = read_and_chunk_all_python_files(
-                directory_path=directory_path
-            )
-            log.info("all_chunks_df", all_chunks_df=all_chunks_df)
-            chosen_types = ["class_definition", "function_definition"]
-            chunks_with_embeddings_df = all_chunks_df[
-                all_chunks_df["type"].isin(chosen_types)
-            ]
-            chunks_without_embeddings_df = all_chunks_df[
-                ~all_chunks_df["type"].isin(chosen_types)
-            ]
-            chunks_with_embeddings_df.loc[:, "embedding"] = create_openai_embeddings(
-                chunks_with_embeddings_df["code"].tolist(),
-                "text-embedding-ada-002",
-                batch_size=100,
-            )
-            self.corpus_df = pd.concat(
-                [
-                    df
-                    for df in [
-                        self.corpus_df,
-                        chunks_with_embeddings_df,
-                        chunks_without_embeddings_df,
-                    ]
-                    if not df.empty
-                ],
-                ignore_index=True,
-            )
-            self.corpus_df.to_csv(
-                self.repo_parent_path / f"{repo_name}.csv", index=False
-            )
+    async def clone_and_process_repo(self):
+        repo_path = Path.joinpath(
+            self.repo_parent_path,
+            *urlparse(self.repo_url).path.split(".")[0].split("/")[1:3],
+        )
+        repo_embedding_path = repo_path / "embeddings.csv"
+        if await aiofiles.os.path.exists(repo_embedding_path):
+            self.corpus_df = pd.read_csv(repo_embedding_path)
+            return
+
+        await log.ainfo("corpus_df", corpus_df=self.corpus_df)
+
+        await shallow_clone_repository(repo_url=self.repo_url, repo_path=repo_path)
+
+        all_chunks_df = await read_and_chunk_all_python_files(directory_path=repo_path)
+
+        await log.ainfo("all_chunks_df", all_chunks_df=all_chunks_df)
+
+        chosen_types = ["class_definition", "function_definition"]
+
+        chunks_with_embeddings_df = all_chunks_df[
+            all_chunks_df["type"].isin(chosen_types)
+        ]
+        chunks_without_embeddings_df = all_chunks_df[
+            ~all_chunks_df["type"].isin(chosen_types)
+        ]
+
+        chunks_with_embeddings_df.loc[:, "embedding"] = await create_openai_embeddings(
+            chunks_with_embeddings_df["code"].tolist(),
+            "text-embedding-ada-002",
+            batch_size=100,
+        )
+        self.corpus_df = pd.concat(
+            [
+                df
+                for df in [
+                    self.corpus_df,
+                    chunks_with_embeddings_df,
+                    chunks_without_embeddings_df,
+                ]
+                if not df.empty
+            ],
+            ignore_index=True,
+        )
+        self.corpus_df.to_csv(repo_embedding_path, index=False)
 
     def compute_similarities(self, query: str):
         chosen_types = ["class_definition", "function_definition"]
@@ -313,7 +318,7 @@ class InferencePipeline:
         )
         return top_chunks, top_chunk_with_imports
 
-    def get_response(self, query: str):
+    async def get_response(self, query: str):
         top_chunks, _ = self.compute_similarities(query=query)
         for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
             time.sleep(0.01)
@@ -326,6 +331,6 @@ if __name__ == "__main__":
         repo_parent_path="samples",
         start_index_folder_path="langchain/libs/langchain/langchain/document_transformers",
     )
-    pipeline.clone_and_process_repo()
+    asyncio.run(pipeline.clone_and_process_repo())
     query = "Write python function to read a HTML file and transform it into text using Langchain"
     response = pipeline.get_response(query=query)

@@ -24,6 +24,8 @@ gitpython = "^3.1.40"
 networkx = "^3.2.1"
 tree-sitter = "^0.20.2"
 lxml = "^4.9.3"
+aiofiles = "^23.2.1"
+polars = "^0.19.12"
 
 
 [tool.poetry.group.test.dependencies]
