@@ -10,24 +10,22 @@ corpus_df = pd.concat([corpus_df, chunks_with_embeddings_df, chunks_without_embe
 12. Add import statements from the file (NOT DONE)
 13. Integrate to a vector store (NOT DONE)
 """
-import os
 import glob
 import json
-
-from ...helpers import log
-from ...config import get_settings
-import openai
-import tiktoken
+import os
 import textwrap
-import numpy as np
-import pandas as pd
-
-from typing import Any, TypedDict, cast
 from pathlib import Path
-from dotenv import load_dotenv
-from git import Repo, GitCommandError
+from typing import Any, TypedDict, cast
+
+import numpy as np
+import openai
+import pandas as pd
+import tiktoken
+from git import GitCommandError, Repo
+
+from ...config import get_settings
+from ...helpers import log
 from .scripts.code_parser import TreeSitterPythonParser
-from .types import ChatCompletionChunk
 
 FloatNDArray = np.ndarray[Any, np.dtype[np.float16]]
 

@@ -1,20 +1,22 @@
 import ast
+import os
 import textwrap
-import networkx as nx
 from typing import List
+
+import networkx as nx
 from tree_sitter import Language, Parser
+
+FOLDER_PATH = f"{os.path.dirname(os.path.realpath(__file__))}{os.path.sep}"
 
 Language.build_library(
     # library
-    "/Users/shagunsood/Hexo/mle-agent/api/mle_agent/models/copilot/scripts/build/my-languages.so",
+    f"{FOLDER_PATH}build/my-languages.so",
     # Languages
-    [
-        "/Users/shagunsood/Hexo/mle-agent/api/mle_agent/models/copilot/scripts/build/tree-sitter-python"
-    ],
+    [f"{FOLDER_PATH}build/tree-sitter-python"],
 )
 
 PY_LANGUAGE = Language(
-    "/Users/shagunsood/Hexo/mle-agent/api/mle_agent/models/copilot/scripts/build/my-languages.so",
+    f"{FOLDER_PATH}build/my-languages.so",
     "python",
 )
 parser = Parser()
