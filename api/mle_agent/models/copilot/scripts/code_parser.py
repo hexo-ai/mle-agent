@@ -10,13 +10,13 @@ FOLDER_PATH = f"{os.path.dirname(os.path.realpath(__file__))}{os.path.sep}"
 
 Language.build_library(
     # library
-    f"{FOLDER_PATH}build/my-languages.so",
+    f"{FOLDER_PATH}langs/my-languages.so",
     # Languages
-    [f"{FOLDER_PATH}build/tree-sitter-python"],
+    [f"{FOLDER_PATH}langs/tree-sitter-python"],
 )
 
 PY_LANGUAGE = Language(
-    f"{FOLDER_PATH}build/my-languages.so",
+    f"{FOLDER_PATH}langs/my-languages.so",
     "python",
 )
 parser = Parser()
