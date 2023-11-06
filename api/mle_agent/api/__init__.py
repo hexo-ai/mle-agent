@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import json
 from typing import TypedDict, final
 
 import uvicorn
@@ -8,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..helpers import log
-from ..models import LLM
+from ..models import LLM, InferencePipeline
 
 
 @final
@@ -29,7 +30,9 @@ async def lifespan(_: FastAPI):
 
 
 class AskRequest(BaseModel):
-    question: str
+    repo_url: str
+    query: str
+    start_index_folder_path: str | None
 
 
 class AskResponseContext(BaseModel):
@@ -59,12 +62,15 @@ def init_api() -> FastAPI:
 
     @app.post("/chat/ask")
     async def ask(request: AskRequest) -> StreamingResponse:
-        if (llm := models.get("LLM")) is None:
-            raise RuntimeError("LLM is not initialized")
-
+        print(request.repo_url)
+        print(request.start_index_folder_path)
+        pipeline = InferencePipeline(
+            repo_url=request.repo_url,
+            start_index_folder_path=request.start_index_folder_path,
+        )
         return StreamingResponse(
-            llm.ask_gpt(request.question),
-            media_type="text/event-stream",
+            pipeline.get_response(query=request.query),
+            media_type="application/json",
         )
 
     return app
