@@ -13,6 +13,8 @@ corpus_df = pd.concat([corpus_df, chunks_with_embeddings_df, chunks_without_embe
 import os
 import glob
 import json
+
+from ...helpers import log
 from ...config import get_settings
 import openai
 import tiktoken
@@ -152,6 +154,7 @@ def create_query_embedding(query: str, embedding_model_name: str):
 def compute_cosine_similarity(
     chunks_embeddings: FloatNDArray, query_embedding: FloatNDArray
 ):
+    log.info("embeddings", embeddings=chunks_embeddings)
     chunk_norms: FloatNDArray = np.linalg.norm(chunks_embeddings, axis=1)
     query_norm = np.linalg.norm(query_embedding)
     # Compute cosine similarities
@@ -202,7 +205,7 @@ def ask_gpt(query: str, context: str):
         model=model, messages=messages, temperature=0, stream=True
     )
     for chunk in response:
-        yield json.dumps(chunk)
+        yield chunk
 
 
 class InferencePipeline:
@@ -247,7 +250,7 @@ class InferencePipeline:
                 "embedding",
             ]
             self.corpus_df = pd.DataFrame(columns=columns)
-
+        log.info("corpus_df", corpus_df=self.corpus_df)
         if not os.path.exists(self.repo_parent_path / f"{repo_name}.csv"):
             repo_path = shallow_clone_repository(
                 repo_url=self.repo_url, repo_parent_path=self.repo_parent_path
@@ -261,6 +264,7 @@ class InferencePipeline:
             all_chunks_df = read_and_chunk_all_python_files(
                 directory_path=directory_path
             )
+            log.info("all_chunks_df", all_chunks_df=all_chunks_df)
             chosen_types = ["class_definition", "function_definition"]
             chunks_with_embeddings_df = all_chunks_df[
                 all_chunks_df["type"].isin(chosen_types)
@@ -301,7 +305,6 @@ class InferencePipeline:
             chunks_with_embeddings_df["embedding"].apply(parse_embedding).tolist()
         ).astype(float)
         query_embedding = create_query_embedding(query, "text-embedding-ada-002")
-        # similarities = compute_cosine_similarity(chunk_embeddings, query_embedding)
         chunks = chunks_with_embeddings_df["code"].tolist()
         top_chunks, _ = get_top_chunks(
             chunks, chunk_embeddings, query_embedding, top_n=3
@@ -314,7 +317,7 @@ class InferencePipeline:
     def get_response(self, query: str):
         top_chunks, _ = self.compute_similarities(query=query)
         for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
-            yield sample_response
+            yield json.dumps(sample_response) + "\n"
 
 
 if __name__ == "__main__":
