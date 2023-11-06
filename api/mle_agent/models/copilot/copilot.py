@@ -15,6 +15,7 @@ import json
 import os
 import textwrap
 from pathlib import Path
+import time
 from typing import Any, TypedDict, cast
 
 import numpy as np
@@ -315,6 +316,7 @@ class InferencePipeline:
     def get_response(self, query: str):
         top_chunks, _ = self.compute_similarities(query=query)
         for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
+            time.sleep(0.01)
             yield json.dumps(sample_response) + "\n"
 
 
