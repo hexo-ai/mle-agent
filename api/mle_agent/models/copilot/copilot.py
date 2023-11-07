@@ -277,7 +277,7 @@ class InferencePipeline:
     ):
         self.repo_url = repo_url
         self.repo_parent_path = (
-            Path(repo_parent_path) if repo_parent_path else Path.cwd()
+            Path(repo_parent_path) if repo_parent_path else Path.cwd() / "repos"
         )
         self.start_index_folder_path = Path(start_index_folder_path)
         columns = [
