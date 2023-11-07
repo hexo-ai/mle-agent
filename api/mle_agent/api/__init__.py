@@ -1,5 +1,5 @@
-from contextlib import asynccontextmanager
 import json
+from contextlib import asynccontextmanager
 from typing import TypedDict, final
 
 import uvicorn
@@ -70,7 +70,7 @@ def init_api() -> FastAPI:
             repo_url=request.repo_url,
             start_index_folder_path=request.start_index_folder_path,
         )
-        pipeline.clone_and_process_repo()
+        await pipeline.clone_and_process_repo()
         return StreamingResponse(
             pipeline.get_response(query=request.query),
             media_type="text/event-stream",

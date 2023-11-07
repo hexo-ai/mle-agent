@@ -16,31 +16,22 @@ import json
 import textwrap
 import time
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 from urllib.parse import urlparse
 
 import aiofiles
 import aiofiles.os
 import numpy as np
-import openai
 import pandas as pd
 import tiktoken
 from git import GitCommandError, Repo
+from openai.types.chat import ChatCompletionMessageParam
 
-from ...config import get_settings
 from ...helpers import log
+from ...libs.openai import openai_client as openai
 from .scripts.code_parser import TreeSitterPythonParser
 
 FloatNDArray = np.ndarray[Any, np.dtype[np.float16]]
-EmbeddingResponseData = TypedDict(
-    "EmbeddingResponseData",
-    {"index": int, "object": str, "embedding": list[float]},
-)
-EmbeddingResponse = TypedDict(
-    "EmbeddingResponse", {"data": list[EmbeddingResponseData]}
-)
-
-openai.api_key = get_settings().openai_api_key
 
 
 async def try_clone_repository(
@@ -50,6 +41,7 @@ async def try_clone_repository(
     branch: str,
 ):
     try:
+        await log.ainfo(f"Cloning {( repo_url, branch ) = } to {repo_path = }")
         await asyncio.to_thread(
             Repo.clone_from,
             repo_url,
@@ -57,9 +49,10 @@ async def try_clone_repository(
             branch=branch,
             depth=1,
         )
-        return
+        return True
     except GitCommandError as e:
-        log.info(f"Failed to clone branch {branch}: {e}")
+        await log.awarning(f"Failed to clone {branch = }: {e}")
+    return False
 
 
 async def shallow_clone_repository(repo_url: str, repo_path: Path):
@@ -68,21 +61,20 @@ async def shallow_clone_repository(repo_url: str, repo_path: Path):
 
     branches = ("master", "main")
 
-    await asyncio.gather(
-        *[
-            try_clone_repository(repo_url, repo_path=repo_path, branch=branch)
-            for branch in branches
-        ]
-    )
-    raise ValueError(f"None of these {branches=} could be found in the repository.")
+    for branch in branches:
+        if await try_clone_repository(repo_url, repo_path=repo_path, branch=branch):
+            break
+    else:
+        raise ValueError(f"None of these {branches=} could be found in the repository.")
 
 
-async def read_and_chunk_document(document_path: str):
-    async with aiofiles.open(document_path, "r") as file:
-        try:
-            document = await file.read()
-        except UnicodeDecodeError:
-            document = ""
+async def read_and_chunk_document(document_path: str, sem: asyncio.Semaphore):
+    async with sem:
+        async with aiofiles.open(document_path, "r") as file:
+            try:
+                document = await file.read()
+            except UnicodeDecodeError:
+                document = ""
 
     parser = TreeSitterPythonParser(document=document)
     [chunks, main_code, import_statements] = await asyncio.gather(
@@ -105,20 +97,23 @@ async def read_and_chunk_document(document_path: str):
 
 async def read_and_chunk_all_python_files(directory_path: Path):
     python_files = glob.glob(f"{directory_path}/**/*.py", recursive=True)
-    all_chunks_df = pd.DataFrame(
-        await asyncio.gather(
-            *[read_and_chunk_document(file) for file in python_files],
-        ),
+    sem = asyncio.Semaphore(100)
+    chunks_df_ls = await asyncio.gather(
+        *[read_and_chunk_document(file, sem) for file in python_files],
     )
+    all_chunks_df = pd.DataFrame()
+    all_chunks_df = pd.concat(chunks_df_ls, ignore_index=True)
     return all_chunks_df
 
 
-async def num_tokens(text: str, model: str) -> int:
+async def num_tokens(text: str, model: str, total_tokens: list[int]) -> int:
     """Return the number of tokens in a string."""
     encoding = await asyncio.to_thread(tiktoken.encoding_for_model, model)
-    await log.ainfo(text)
     token_ls = await asyncio.to_thread(encoding.encode, text)
-    return len(token_ls)
+    num_tokens = len(token_ls)
+    await log.ainfo("num_tokens", num_tokens=num_tokens, total_tokens=total_tokens[0])
+    total_tokens[0] += 1000 if num_tokens > 8192 else num_tokens
+    return num_tokens
 
 
 def parse_embedding(embedding: str | list[str]):
@@ -133,35 +128,81 @@ def parse_embedding(embedding: str | list[str]):
 async def create_openai_embedding(
     batch: list[str],
     embedding_model_name: str,
-):
-    batch = [
-        item[:1000] if await num_tokens(item, embedding_model_name) > 8192 else item
-        for item in batch
-    ]
-    response = cast(
-        EmbeddingResponse,
-        await asyncio.to_thread(
-            openai.Embedding.create, model=embedding_model_name, input=batch
-        ),
-    )
-    for i, be in enumerate(response["data"]):
-        assert i == be["index"]  # double check embeddings are in same order as input
-    return [e["embedding"] for e in response["data"]]
+    *,
+    sem: asyncio.Semaphore,
+    total_tokens: list[int],
+    start_time: list[float],
+) -> list[list[float]]:
+    async with sem:
+        batch = [
+            item[:1000]
+            if await num_tokens(
+                item,
+                embedding_model_name,
+                total_tokens=total_tokens,
+            )
+            > 8192
+            else item
+            for item in batch
+        ]
+
+        await log.ainfo(
+            "queue status",
+            total_tokens=total_tokens[0],
+        )
+
+        # If the total number of tokens in a request exceeds 1M in <1m, sleep for 60 seconds
+        current_time = time.time()
+        if current_time - start_time[0] < 60 and total_tokens[0] >= 499_999:
+            await log.ainfo("Sleeping for 60 seconds", total_tokens=total_tokens[0])
+            await asyncio.sleep(60)
+        elif current_time - start_time[0] > 60:
+            start_time[0] = current_time + 60
+            total_tokens[0] = 0
+
+        response = await openai.embeddings.create(
+            model=embedding_model_name, input=batch
+        )
+        await log.ainfo("response", response=len(response.data))
+        for i, be in enumerate(response.data):
+            assert i == be.index  # double check embeddings are in same order as input
+
+    return [e.embedding for e in response.data]
 
 
 async def create_openai_embeddings(
     inputs: list[str],
     embedding_model_name: str,
-    batch_size=10,
-):
+    batch_size=5,
+) -> list[list[float]]:
     batches = [
         inputs[batch_start : batch_start + batch_size]
         for batch_start in range(0, len(inputs), batch_size)
     ]
-
-    return await asyncio.gather(
-        *[create_openai_embedding(batch, embedding_model_name) for batch in batches]
+    await log.ainfo(
+        "batches", batches=[len(batch) for batch in batches], len=len(batches)
     )
+
+    # the total number of tokens in a request must be less than 1M
+    # to not hit the rate limit
+
+    start = [time.time()]
+    total_tokens = [0]
+    sem = asyncio.Semaphore(50)
+    embeddings_ls: list[list[list[float]]] = await asyncio.gather(
+        *[
+            create_openai_embedding(
+                batch,
+                embedding_model_name,
+                total_tokens=total_tokens,
+                start_time=start,
+                sem=sem,
+            )
+            for batch in batches
+        ]
+    )
+
+    return [embedding for embeddings in embeddings_ls for embedding in embeddings]
 
 
 async def create_query_embedding(query: str, embedding_model_name: str):
@@ -213,17 +254,17 @@ def add_imports_to_code(imports: list[str], code: str):
     return import_str + "\n" + code
 
 
-def ask_gpt(query: str, context: str):
+async def ask_gpt(query: str, context: str):
     message = create_message(query, context)
-    messages = [
+    messages: list[ChatCompletionMessageParam] = [
         {"role": "system", "content": "You are an expert programmer"},
         {"role": "user", "content": message},
     ]
     model = "gpt-3.5-turbo"
-    response = openai.ChatCompletion.create(
+    response = await openai.chat.completions.create(
         model=model, messages=messages, temperature=0, stream=True
     )
-    for chunk in response:
+    async for chunk in response:
         yield chunk
 
 
@@ -281,7 +322,7 @@ class InferencePipeline:
         chunks_with_embeddings_df.loc[:, "embedding"] = await create_openai_embeddings(
             chunks_with_embeddings_df["code"].tolist(),
             "text-embedding-ada-002",
-            batch_size=100,
+            batch_size=10,
         )
         self.corpus_df = pd.concat(
             [
@@ -297,18 +338,24 @@ class InferencePipeline:
         )
         self.corpus_df.to_csv(repo_embedding_path, index=False)
 
-    def compute_similarities(self, query: str):
+    async def compute_similarities(self, query: str):
         chosen_types = ["class_definition", "function_definition"]
-        chunks_with_embeddings_df = self.corpus_df[
-            self.corpus_df["type"].isin(chosen_types)
-        ]
-        chunks_with_import_statements = self.corpus_df[
-            self.corpus_df["type"].isin(["import_statement", "import_from_statement"])
-        ]
+        chunks_with_embeddings_df = cast(
+            pd.DataFrame, self.corpus_df[self.corpus_df["type"].isin(chosen_types)]
+        )
+        chunks_with_import_statements = cast(
+            pd.DataFrame,
+            self.corpus_df[
+                self.corpus_df["type"].isin(
+                    ["import_statement", "import_from_statement"]
+                )
+            ],
+        )
+
         chunk_embeddings = np.array(
             chunks_with_embeddings_df["embedding"].apply(parse_embedding).tolist()
         ).astype(float)
-        query_embedding = create_query_embedding(query, "text-embedding-ada-002")
+        query_embedding = await create_query_embedding(query, "text-embedding-ada-002")
         chunks = chunks_with_embeddings_df["code"].tolist()
         top_chunks, _ = get_top_chunks(
             chunks, chunk_embeddings, query_embedding, top_n=3
@@ -319,10 +366,10 @@ class InferencePipeline:
         return top_chunks, top_chunk_with_imports
 
     async def get_response(self, query: str):
-        top_chunks, _ = self.compute_similarities(query=query)
-        for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
+        top_chunks, _ = await self.compute_similarities(query=query)
+        async for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
             time.sleep(0.01)
-            yield json.dumps(sample_response) + "\n"
+            yield sample_response.model_dump_json() + "\n"
 
 
 if __name__ == "__main__":
@@ -333,4 +380,4 @@ if __name__ == "__main__":
     )
     asyncio.run(pipeline.clone_and_process_repo())
     query = "Write python function to read a HTML file and transform it into text using Langchain"
-    response = pipeline.get_response(query=query)
+    response = asyncio.run(pipeline.get_response(query=query))
