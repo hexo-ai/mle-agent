@@ -304,9 +304,19 @@ class InferencePipeline:
 
         await log.ainfo("corpus_df", corpus_df=self.corpus_df)
 
+        yield "Loading and processing repo...\n\n"
+
         await shallow_clone_repository(repo_url=self.repo_url, repo_path=repo_path)
 
+        yield "Cloned repo...\n\n"
+
+        await asyncio.sleep(0.5)
+
+        yield "Processing repo...\n\n"
+
         all_chunks_df = await read_and_chunk_all_python_files(directory_path=repo_path)
+
+        yield "Chunked repo...\n\n"
 
         await log.ainfo("all_chunks_df", all_chunks_df=all_chunks_df)
 
@@ -319,11 +329,16 @@ class InferencePipeline:
             ~all_chunks_df["type"].isin(chosen_types)
         ]
 
+        yield "Creating embeddings...\n\n"
+
         chunks_with_embeddings_df.loc[:, "embedding"] = await create_openai_embeddings(
             chunks_with_embeddings_df["code"].tolist(),
             "text-embedding-ada-002",
             batch_size=10,
         )
+
+        yield "Created embeddings...\n\n"
+
         self.corpus_df = pd.concat(
             [
                 df

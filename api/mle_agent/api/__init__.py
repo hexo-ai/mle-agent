@@ -1,14 +1,38 @@
+import asyncio
+import time
+import uuid
 from contextlib import asynccontextmanager
-from typing import TypedDict, final
+from typing import AsyncGenerator, TypedDict, final
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from openai.types.chat import ChatCompletionChunk
+from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 from pydantic import BaseModel
 
 from ..helpers import log
 from ..models import LLM, InferencePipeline
+
+
+def create_serialised_chunk(content: str) -> str:
+    return (
+        ChatCompletionChunk(
+            id=uuid.uuid4().hex,
+            choices=[
+                Choice(
+                    delta=ChoiceDelta(content=content),
+                    finish_reason=None,
+                    index=0,
+                )
+            ],
+            created=int(time.monotonic()),
+            model="gpt-3.5-turbo-0613",
+            object="chat.completion.chunk",
+        ).model_dump_json()
+        + "\n"
+    )
 
 
 @final
@@ -45,6 +69,33 @@ class AskResponse(BaseModel):
     context: AskResponseContext
 
 
+async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
+    pipeline = InferencePipeline(
+        repo_url=request.repo_url,
+        start_index_folder_path=request.start_index_folder_path,
+    )
+
+    async for content in pipeline.clone_and_process_repo():
+        await asyncio.sleep(0.2)
+
+        yield ChatCompletionChunk(
+            id=uuid.uuid4().hex,
+            choices=[
+                Choice(
+                    delta=ChoiceDelta(content=content),
+                    finish_reason=None,
+                    index=0,
+                )
+            ],
+            created=int(time.monotonic()),
+            model="gpt-3.5-turbo-0613",
+            object="chat.completion.chunk",
+        ).model_dump_json() + "\n"
+
+    async for chunk in pipeline.get_response(query=request.query):
+        yield chunk
+
+
 def init_api() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     origins = ["*"]
@@ -65,13 +116,9 @@ def init_api() -> FastAPI:
     async def ask(request: AskRequest) -> StreamingResponse:
         log.info(request.repo_url)
         log.info(request.start_index_folder_path)
-        pipeline = InferencePipeline(
-            repo_url=request.repo_url,
-            start_index_folder_path=request.start_index_folder_path,
-        )
-        await pipeline.clone_and_process_repo()
+
         return StreamingResponse(
-            pipeline.get_response(query=request.query),
+            get_response(request=request),
             media_type="text/event-stream",
         )
 
