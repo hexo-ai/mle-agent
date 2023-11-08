@@ -222,7 +222,10 @@ def add_imports_to_code(imports: list[str], code: str):
 async def ask_gpt(query: str, context: str):
     message = create_message(query, context)
     messages: list[ChatCompletionMessageParam] = [
-        {"role": "system", "content": "You are an expert programmer"},
+        {
+            "role": "system",
+            "content": "You are an expert programmer. Your job is to go through context provided from python github repository and answer users questions. Always explain things using code. Make it as descriptive and explainatory as possible. Use functions and other important variables from the context to give the best answer",
+        },
         {"role": "user", "content": message},
     ]
     model = "gpt-3.5-turbo"
