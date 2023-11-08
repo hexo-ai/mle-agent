@@ -16,7 +16,7 @@ import json
 import textwrap
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, AsyncGenerator, Literal, cast
 from urllib.parse import urlparse
 
 import aiofiles
@@ -129,43 +129,39 @@ async def create_openai_embedding(
     batch: list[str],
     embedding_model_name: str,
     *,
-    sem: asyncio.Semaphore,
     total_tokens: list[int],
     start_time: list[float],
 ) -> list[list[float]]:
-    async with sem:
-        batch = [
-            item[:1000]
-            if await num_tokens(
-                item,
-                embedding_model_name,
-                total_tokens=total_tokens,
-            )
-            > 8192
-            else item
-            for item in batch
-        ]
-
-        await log.ainfo(
-            "queue status",
-            total_tokens=total_tokens[0],
+    batch = [
+        item[:1000]
+        if await num_tokens(
+            item,
+            embedding_model_name,
+            total_tokens=total_tokens,
         )
+        > 8192
+        else item
+        for item in batch
+    ]
 
-        # If the total number of tokens in a request exceeds 1M in <1m, sleep for 60 seconds
-        current_time = time.time()
-        if current_time - start_time[0] < 60 and total_tokens[0] >= 499_999:
-            await log.ainfo("Sleeping for 60 seconds", total_tokens=total_tokens[0])
-            await asyncio.sleep(60)
-        elif current_time - start_time[0] > 60:
-            start_time[0] = current_time + 60
-            total_tokens[0] = 0
+    await log.ainfo(
+        "queue status",
+        total_tokens=total_tokens[0],
+    )
 
-        response = await openai.embeddings.create(
-            model=embedding_model_name, input=batch
-        )
-        await log.ainfo("response", response=len(response.data))
-        for i, be in enumerate(response.data):
-            assert i == be.index  # double check embeddings are in same order as input
+    # If the total number of tokens in a request exceeds 1M in <1m, sleep for 60 seconds
+    current_time = time.time()
+    if current_time - start_time[0] < 60 and total_tokens[0] >= 499_999:
+        await log.ainfo("Sleeping for 60 seconds", total_tokens=total_tokens[0])
+        await asyncio.sleep(60)
+    elif current_time - start_time[0] > 60:
+        start_time[0] = current_time + 60
+        total_tokens[0] = 0
+
+    response = await openai.embeddings.create(model=embedding_model_name, input=batch)
+    await log.ainfo("response", response=len(response.data))
+    for i, be in enumerate(response.data):
+        assert i == be.index  # double check embeddings are in same order as input
 
     return [e.embedding for e in response.data]
 
@@ -174,7 +170,7 @@ async def create_openai_embeddings(
     inputs: list[str],
     embedding_model_name: str,
     batch_size=5,
-) -> list[list[float]]:
+) -> AsyncGenerator[tuple[list[list[float]], Literal["pending", "done"]], None]:
     batches = [
         inputs[batch_start : batch_start + batch_size]
         for batch_start in range(0, len(inputs), batch_size)
@@ -188,26 +184,29 @@ async def create_openai_embeddings(
 
     start = [time.time()]
     total_tokens = [0]
-    sem = asyncio.Semaphore(50)
-    embeddings_ls: list[list[list[float]]] = await asyncio.gather(
-        *[
-            create_openai_embedding(
+    embeddings_ls: list[list[float]] = []
+
+    for batch in batches:
+        embeddings_ls.extend(
+            await create_openai_embedding(
                 batch,
                 embedding_model_name,
                 total_tokens=total_tokens,
                 start_time=start,
-                sem=sem,
             )
-            for batch in batches
-        ]
-    )
+        )
+        yield embeddings_ls, "pending"
 
-    return [embedding for embeddings in embeddings_ls for embedding in embeddings]
+    yield embeddings_ls, "done"
 
 
 async def create_query_embedding(query: str, embedding_model_name: str):
-    embeddings = await create_openai_embeddings([query], embedding_model_name)
-    query_embedding: FloatNDArray = np.array(embeddings[0]).astype(float).reshape(1, -1)
+    embeddings: list[float] = []
+    async for em, status in create_openai_embeddings([query], embedding_model_name):
+        if status == "done":
+            embeddings = list(em[0])
+            break
+    query_embedding: FloatNDArray = np.array(embeddings).astype(float).reshape(1, -1)
     return query_embedding
 
 
@@ -331,11 +330,15 @@ class InferencePipeline:
 
         yield "Creating embeddings...\n\n"
 
-        chunks_with_embeddings_df.loc[:, "embedding"] = await create_openai_embeddings(
+        async for em, status in create_openai_embeddings(
             chunks_with_embeddings_df["code"].tolist(),
             "text-embedding-ada-002",
             batch_size=10,
-        )
+        ):
+            if status == "done":
+                chunks_with_embeddings_df.loc[:, "embedding"] = em
+                break
+            yield f"Embedding: Batch {len(em)} in progress...\n\n"
 
         yield "Created embeddings...\n\n"
 
