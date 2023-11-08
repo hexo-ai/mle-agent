@@ -299,6 +299,7 @@ class InferencePipeline:
         repo_embedding_path = repo_path / "embeddings.csv"
         if await aiofiles.os.path.exists(repo_embedding_path):
             self.corpus_df = pd.read_csv(repo_embedding_path)
+            yield "Loaded repo...\n\n"
             return
 
         await log.ainfo("corpus_df", corpus_df=self.corpus_df)
@@ -333,7 +334,7 @@ class InferencePipeline:
         async for em, status in create_openai_embeddings(
             chunks_with_embeddings_df["code"].tolist(),
             "text-embedding-ada-002",
-            batch_size=10,
+            batch_size=100,
         ):
             if status == "done":
                 chunks_with_embeddings_df.loc[:, "embedding"] = em
