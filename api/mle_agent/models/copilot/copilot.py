@@ -339,6 +339,9 @@ class InferencePipeline:
 
         yield "Created embeddings...\n\n"
 
+        # indicate end of repo processing
+        yield ""
+
         self.corpus_df = pd.concat(
             [
                 df
@@ -393,6 +396,6 @@ if __name__ == "__main__":
         repo_parent_path="samples",
         start_index_folder_path="langchain/libs/langchain/langchain/document_transformers",
     )
-    asyncio.run(pipeline.clone_and_process_repo())
+    pipeline.clone_and_process_repo()
     query = "Write python function to read a HTML file and transform it into text using Langchain"
-    response = asyncio.run(pipeline.get_response(query=query))
+    pipeline.get_response(query=query)

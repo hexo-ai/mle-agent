@@ -16,10 +16,10 @@ from ..helpers import log
 from ..models import LLM, InferencePipeline
 
 
-def create_serialised_chunk(content: str) -> str:
+def create_serialised_chunk(id: str, content: str) -> str:
     return (
         ChatCompletionChunk(
-            id=uuid.uuid4().hex,
+            id=id + uuid.uuid4().hex,
             choices=[
                 Choice(
                     delta=ChoiceDelta(content=content),
@@ -78,19 +78,10 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
     async for content in pipeline.clone_and_process_repo():
         await asyncio.sleep(0.2)
 
-        yield ChatCompletionChunk(
-            id=uuid.uuid4().hex,
-            choices=[
-                Choice(
-                    delta=ChoiceDelta(content=content),
-                    finish_reason=None,
-                    index=0,
-                )
-            ],
-            created=int(time.monotonic()),
-            model="gpt-3.5-turbo-0613",
-            object="chat.completion.chunk",
-        ).model_dump_json() + "\n"
+        yield create_serialised_chunk(
+            id="repoProcess-",
+            content=content,
+        )
 
     async for chunk in pipeline.get_response(query=request.query):
         yield chunk
