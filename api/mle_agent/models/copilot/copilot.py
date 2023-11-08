@@ -14,7 +14,6 @@ import asyncio
 import glob
 import json
 import textwrap
-import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Literal, cast
 from urllib.parse import urlparse
@@ -106,13 +105,11 @@ async def read_and_chunk_all_python_files(directory_path: Path):
     return all_chunks_df
 
 
-async def num_tokens(text: str, model: str, total_tokens: list[int]) -> int:
+async def num_tokens(text: str, model: str) -> int:
     """Return the number of tokens in a string."""
     encoding = await asyncio.to_thread(tiktoken.encoding_for_model, model)
     token_ls = await asyncio.to_thread(encoding.encode, text)
     num_tokens = len(token_ls)
-    await log.ainfo("num_tokens", num_tokens=num_tokens, total_tokens=total_tokens[0])
-    total_tokens[0] += 1000 if num_tokens > 8192 else num_tokens
     return num_tokens
 
 
@@ -128,35 +125,17 @@ def parse_embedding(embedding: str | list[str]):
 async def create_openai_embedding(
     batch: list[str],
     embedding_model_name: str,
-    *,
-    total_tokens: list[int],
-    start_time: list[float],
 ) -> list[list[float]]:
     batch = [
         item[:1000]
         if await num_tokens(
             item,
             embedding_model_name,
-            total_tokens=total_tokens,
         )
         > 8192
         else item
         for item in batch
     ]
-
-    await log.ainfo(
-        "queue status",
-        total_tokens=total_tokens[0],
-    )
-
-    # If the total number of tokens in a request exceeds 1M in <1m, sleep for 60 seconds
-    current_time = time.time()
-    if current_time - start_time[0] < 60 and total_tokens[0] >= 499_999:
-        await log.ainfo("Sleeping for 60 seconds", total_tokens=total_tokens[0])
-        await asyncio.sleep(60)
-    elif current_time - start_time[0] > 60:
-        start_time[0] = current_time + 60
-        total_tokens[0] = 0
 
     response = await openai.embeddings.create(model=embedding_model_name, input=batch)
     await log.ainfo("response", response=len(response.data))
@@ -167,23 +146,12 @@ async def create_openai_embedding(
 
 
 async def create_openai_embeddings(
-    inputs: list[str],
+    batches: list[list[str]],
     embedding_model_name: str,
-    batch_size=5,
 ) -> AsyncGenerator[tuple[list[list[float]], Literal["pending", "done"]], None]:
-    batches = [
-        inputs[batch_start : batch_start + batch_size]
-        for batch_start in range(0, len(inputs), batch_size)
-    ]
-    await log.ainfo(
-        "batches", batches=[len(batch) for batch in batches], len=len(batches)
-    )
-
     # the total number of tokens in a request must be less than 1M
     # to not hit the rate limit
 
-    start = [time.time()]
-    total_tokens = [0]
     embeddings_ls: list[list[float]] = []
 
     for batch in batches:
@@ -191,8 +159,6 @@ async def create_openai_embeddings(
             await create_openai_embedding(
                 batch,
                 embedding_model_name,
-                total_tokens=total_tokens,
-                start_time=start,
             )
         )
         yield embeddings_ls, "pending"
@@ -202,7 +168,7 @@ async def create_openai_embeddings(
 
 async def create_query_embedding(query: str, embedding_model_name: str):
     embeddings: list[float] = []
-    async for em, status in create_openai_embeddings([query], embedding_model_name):
+    async for em, status in create_openai_embeddings([[query]], embedding_model_name):
         if status == "done":
             embeddings = list(em[0])
             break
@@ -332,15 +298,25 @@ class InferencePipeline:
 
         yield "Creating embeddings...\n\n"
 
+        batch_size = 100
+        code_inputs = chunks_with_embeddings_df["code"].tolist()
+        batches: list[list[str]] = [
+            code_inputs[batch_start : batch_start + batch_size]
+            for batch_start in range(0, len(code_inputs), batch_size)
+        ]
+        no_of_batches = len(batches)
+        await log.ainfo(
+            "batches", batches=[len(batch) for batch in batches], len=len(batches)
+        )
+
         async for em, status in create_openai_embeddings(
-            chunks_with_embeddings_df["code"].tolist(),
+            batches,
             "text-embedding-ada-002",
-            batch_size=100,
         ):
             if status == "done":
                 chunks_with_embeddings_df.loc[:, "embedding"] = em
                 break
-            yield f"Embedding: Batch {len(em)} in progress...\n\n"
+            yield f"Embedding: Batch {int(round(len(em)/batch_size, batch_size))} / {no_of_batches} in progress...\n\n"
 
         yield "Created embeddings...\n\n"
 
