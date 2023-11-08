@@ -300,6 +300,7 @@ class InferencePipeline:
         if await aiofiles.os.path.exists(repo_embedding_path):
             self.corpus_df = pd.read_csv(repo_embedding_path)
             yield "Loaded repo...\n\n"
+            yield ""
             return
 
         await log.ainfo("corpus_df", corpus_df=self.corpus_df)
