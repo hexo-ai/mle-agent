@@ -101,8 +101,8 @@ async def read_and_chunk_all_python_files(directory_path: Path):
     chunks_df_ls = await asyncio.gather(
         *[read_and_chunk_document(file, sem) for file in python_files],
     )
-    all_chunks_df = pd.DataFrame()
-    all_chunks_df = pd.concat(chunks_df_ls, ignore_index=True)
+    all_chunks_df: pd.DataFrame = pd.DataFrame()
+    all_chunks_df = cast(pd.DataFrame, pd.concat(chunks_df_ls, ignore_index=True))
     return all_chunks_df
 
 
