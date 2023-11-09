@@ -371,7 +371,9 @@ class InferencePipeline:
         top_chunks, _ = await self.compute_similarities(query=query)
         async for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
             await asyncio.sleep(0.01)
-            yield sample_response.model_dump_json() + "\n"
+            str_resp = sample_response.model_dump_json() + "\n"
+            await log.ainfo("str_resp", str_resp=str_resp)
+            yield str_resp
 
 
 if __name__ == "__main__":

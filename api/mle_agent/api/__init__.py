@@ -78,10 +78,13 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
     async for content in pipeline.clone_and_process_repo():
         await asyncio.sleep(0.2)
 
-        yield create_serialised_chunk(
+        serialised_chunk = create_serialised_chunk(
             id="repoProcess-",
             content=content,
         )
+
+        await log.ainfo("Sending chunk", chunk=serialised_chunk)
+        yield serialised_chunk
 
     async for chunk in pipeline.get_response(query=request.query):
         yield chunk
