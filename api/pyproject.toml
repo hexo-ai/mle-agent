@@ -26,6 +26,7 @@ tree-sitter = "^0.20.2"
 lxml = "^4.9.3"
 aiofiles = "^23.2.1"
 polars = "^0.19.12"
+qdrant-client = "^1.6.4"
 
 
 [tool.poetry.group.test.dependencies]

@@ -228,7 +228,7 @@ async def ask_gpt(query: str, context: str):
         },
         {"role": "user", "content": message},
     ]
-    model = "gpt-3.5-turbo"
+    model = "gpt-4"
     response = await openai.chat.completions.create(
         model=model, messages=messages, temperature=0, stream=True
     )
