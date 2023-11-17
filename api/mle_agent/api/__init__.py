@@ -45,15 +45,13 @@ models: Models = {}
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    log.info("Initializing LLM...")
-    models["LLM"] = LLM()
-    log.info("LLM initialized", llm_model=models["LLM"])
     yield
     models.clear()
 
 
 class AskRequest(BaseModel):
     repo_url: str
+    branch: str | None = None
     query: str
     start_index_folder_path: str = ""
     id: str | None = None
@@ -72,6 +70,7 @@ class AskResponse(BaseModel):
 async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
     pipeline = InferencePipeline(
         repo_url=request.repo_url,
+        branch=request.branch,
         start_index_folder_path=request.start_index_folder_path,
     )
 

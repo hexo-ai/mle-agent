@@ -54,14 +54,21 @@ async def try_clone_repository(
     return False
 
 
-async def shallow_clone_repository(repo_url: str, repo_path: Path):
+async def shallow_clone_repository(repo_url: str, repo_path: Path, branch: str | None):
     if await aiofiles.os.path.exists(repo_path):
         return
 
     branches = ("master", "main")
 
+    if branch:
+        branches = (branch, *branches)
+
     for branch in branches:
-        if await try_clone_repository(repo_url, repo_path=repo_path, branch=branch):
+        if await try_clone_repository(
+            repo_url,
+            repo_path=repo_path,
+            branch=branch,
+        ):
             break
     else:
         raise ValueError(f"None of these {branches=} could be found in the repository.")
@@ -240,13 +247,16 @@ class InferencePipeline:
     def __init__(
         self,
         repo_url: str,
+        *,
         repo_parent_path: str | None = None,
         start_index_folder_path: str = "",
+        branch: str | None = None,
     ):
         self.repo_url = repo_url
         self.repo_parent_path = (
             Path(repo_parent_path) if repo_parent_path else Path.cwd() / "repos"
         )
+        self.branch = branch
         self.start_index_folder_path = Path(start_index_folder_path)
         columns = [
             "repo_url",
@@ -276,7 +286,11 @@ class InferencePipeline:
 
         yield "Loading and processing repo...\n\n"
 
-        await shallow_clone_repository(repo_url=self.repo_url, repo_path=repo_path)
+        await shallow_clone_repository(
+            repo_url=self.repo_url,
+            repo_path=repo_path,
+            branch=self.branch,
+        )
 
         yield "Cloned repo...\n\n"
 
