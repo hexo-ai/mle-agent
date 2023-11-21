@@ -115,7 +115,7 @@ async def read_and_chunk_all_python_files(directory_path: Path):
 async def num_tokens(text: str, model: str) -> int:
     """Return the number of tokens in a string."""
     encoding = await asyncio.to_thread(tiktoken.encoding_for_model, model)
-    token_ls = await asyncio.to_thread(encoding.encode, text)
+    token_ls = await asyncio.to_thread(encoding.encode, text, disallowed_special=())
     num_tokens = len(token_ls)
     return num_tokens
 
