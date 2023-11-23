@@ -25,6 +25,7 @@ import pandas as pd
 import tiktoken
 from git import GitCommandError, Repo
 from openai.types.chat import ChatCompletionMessageParam
+from langchain.text_splitter import MarkdownHeaderTextSplitter
 
 from ...helpers import log
 from ...libs.openai import openai_client as openai
@@ -74,9 +75,9 @@ async def shallow_clone_repository(repo_url: str, repo_path: Path, branch: str |
         raise ValueError(f"None of these {branches=} could be found in the repository.")
 
 
-async def read_and_chunk_document(document_path: str, sem: asyncio.Semaphore):
+async def read_and_chunk_python_document(document_path: str, sem: asyncio.Semaphore):
     async with sem:
-        async with aiofiles.open(document_path, "r") as file:
+        async with aiofiles.open(document_path, "r", encoding="utf-8") as file:
             try:
                 document = await file.read()
             except UnicodeDecodeError:
@@ -101,14 +102,54 @@ async def read_and_chunk_document(document_path: str, sem: asyncio.Semaphore):
     return chunks_df
 
 
+async def read_and_chunk_markdown_document(document_path: str, sem: asyncio.Semaphore):
+    async with sem:
+        async with aiofiles.open(document_path, "r", encoding="utf-8") as file:
+            try:
+                document = await file.read()
+            except UnicodeDecodeError:
+                document = ""
+
+    headers_to_split_on = [(str("##"), str("Header 2"))]
+    markdown_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=headers_to_split_on, return_each_line=False
+    )
+    md_header_splits = markdown_splitter.split_text(document)
+    chunks = []
+    for item_num in range(len(md_header_splits)):
+        joined_content = " ".join(md_header_splits[item_num].metadata.values())
+        joined_content = "\n" + md_header_splits[item_num].page_content
+        chunks.append({"code": f"{joined_content}", "type": "markdown"})
+    chunks_df = pd.DataFrame(chunks)
+    if len(chunks_df) > 0:
+        chunks_df = chunks_df[chunks_df["code"].apply(lambda x: len(x)) != 0]
+    return chunks_df
+
+
 async def read_and_chunk_all_python_files(directory_path: Path):
     python_files = glob.glob(f"{directory_path}/**/*.py", recursive=True)
     sem = asyncio.Semaphore(100)
     chunks_df_ls = await asyncio.gather(
-        *[read_and_chunk_document(file, sem) for file in python_files],
+        *[read_and_chunk_python_document(file, sem) for file in python_files],
     )
     all_chunks_df: pd.DataFrame = pd.DataFrame()
     all_chunks_df = cast(pd.DataFrame, pd.concat(chunks_df_ls, ignore_index=True))
+    return all_chunks_df
+
+
+async def read_and_chunk_all_markdown_files(directory_path):
+    all_chunks_df = pd.DataFrame()
+
+    markdown_files_md = glob.glob(f"{directory_path}/**/*.md", recursive=True)
+    markdown_files_mdx = glob.glob(f"{directory_path}/**/*.mdx", recursive=True)
+    sem = asyncio.Semaphore(100)
+    markdown_files = markdown_files_md + markdown_files_mdx
+    chunks_df_ls = await asyncio.gather(
+        *[read_and_chunk_markdown_document(file, sem) for file in markdown_files],
+    )
+    all_chunks_df: pd.DataFrame = pd.DataFrame()
+    all_chunks_df = cast(pd.DataFrame, pd.concat(chunks_df_ls, ignore_index=True))
+
     return all_chunks_df
 
 
@@ -197,10 +238,10 @@ def compute_cosine_similarity(
 
 
 def create_message(query: str, context: str):
-    message = f"Respond to the query based on the context provided: \
+    message = f"Respond to the query based on the provided context: {context} \
                 If the query involves writing code, keep the code concise. \
                 Write code only for what the user has asked for \
-                Query: {query} \n Context: {context} \n Query: {query} \n Answer:"
+                Query: {query} \n "
     return message
 
 
@@ -298,13 +339,20 @@ class InferencePipeline:
 
         yield "Processing repo...\n\n"
 
-        all_chunks_df = await read_and_chunk_all_python_files(directory_path=repo_path)
+        all_python_chunks_df = await read_and_chunk_all_python_files(
+            directory_path=repo_path
+        )
+        all_markdown_chunks_df = await read_and_chunk_all_markdown_files(
+            directory_path=repo_path
+        )
+
+        all_chunks_df = pd.concat([all_python_chunks_df, all_markdown_chunks_df])
 
         yield "Chunked repo...\n\n"
 
-        await log.ainfo("all_chunks_df", all_chunks_df=all_chunks_df)
+        await log.ainfo("all_chunks_df", all_chunks_df=all_python_chunks_df)
 
-        chosen_types = ["class_definition", "function_definition"]
+        chosen_types = ["class_definition", "function_definition", "markdown"]
 
         chunks_with_embeddings_df = all_chunks_df[
             all_chunks_df["type"].isin(chosen_types)
@@ -355,7 +403,7 @@ class InferencePipeline:
         self.corpus_df.to_csv(repo_embedding_path, index=False)
 
     async def compute_similarities(self, query: str):
-        chosen_types = ["class_definition", "function_definition"]
+        chosen_types = ["class_definition", "function_definition", "markdown"]
         chunks_with_embeddings_df = cast(
             pd.DataFrame, self.corpus_df[self.corpus_df["type"].isin(chosen_types)]
         )
