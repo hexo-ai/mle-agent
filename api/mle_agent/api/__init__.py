@@ -3,12 +3,14 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, TypedDict, final
+from openai import OpenAI
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openai.types.chat import ChatCompletionChunk
+from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 from pydantic import BaseModel
 
@@ -56,6 +58,8 @@ class AskRequest(BaseModel):
     start_index_folder_path: str = ""
     id: str | None = None
     response_id: str | None = None
+    messages: list[ChatCompletionMessageParam]
+    model: str
 
 
 class AskResponseContext(BaseModel):
@@ -81,11 +85,13 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
             id="repoProcess-",
             content=content,
         )
-
+        await log.ainfo("messages", messages=request.messages)
         await log.ainfo("Sending chunk", chunk=serialised_chunk)
         yield serialised_chunk
 
-    async for chunk in pipeline.get_response(query=request.query):
+    async for chunk in pipeline.get_response(
+        query=request.query, messages=request.messages , model=request.model
+    ):
         yield chunk
 
 
@@ -109,6 +115,7 @@ def init_api() -> FastAPI:
     async def ask(request: AskRequest) -> StreamingResponse:
         log.info(request.repo_url)
         log.info(request.start_index_folder_path)
+        log.info(request.model)
 
         return StreamingResponse(
             get_response(request=request),

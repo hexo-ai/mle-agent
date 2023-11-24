@@ -31,6 +31,10 @@ from ...helpers import log
 from ...libs.openai import openai_client as openai
 from .scripts.code_parser import TreeSitterPythonParser
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 FloatNDArray = np.ndarray[Any, np.dtype[np.float16]]
 
 
@@ -237,12 +241,16 @@ def compute_cosine_similarity(
     return similarities
 
 
-def create_message(query: str, context: str):
-    message = f"Respond to the query based on the provided context: {context} \
-                If the query involves writing code, keep the code concise. \
-                Write code only for what the user has asked for \
-                Query: {query} \n "
-    return message
+def create_message(messages: list[ChatCompletionMessageParam], context: str):
+    for message in reversed(messages):
+        if message["role"] == "user":
+            if isinstance(message["content"], str):
+                message["content"] += context
+            elif message["content"] is None:
+                message["content"] = context
+            break
+
+    return messages
 
 
 def get_top_chunks(
@@ -267,16 +275,8 @@ def add_imports_to_code(imports: list[str], code: str):
     return import_str + "\n" + code
 
 
-async def ask_gpt(query: str, context: str):
-    message = create_message(query, context)
-    messages: list[ChatCompletionMessageParam] = [
-        {
-            "role": "system",
-            "content": "You are an expert programmer. Your job is to go through context provided from python github repository and answer users questions. Always explain things using code. Make it as descriptive and explainatory as possible. Use functions and other important variables from the context to give the best answer",
-        },
-        {"role": "user", "content": message},
-    ]
-    model = "gpt-4"
+async def ask_gpt(messages: list[ChatCompletionMessageParam], context: str, model: str):
+    messages = create_message(messages, context)
     response = await openai.chat.completions.create(
         model=model, messages=messages, temperature=0, stream=True
     )
@@ -402,6 +402,12 @@ class InferencePipeline:
         )
         self.corpus_df.to_csv(repo_embedding_path, index=False)
 
+    async def get_latest_prompt(self, messages: list[ChatCompletionMessageParam]):
+        for message in reversed(messages):
+            if message["role"] == "user":
+                return str(message["content"])
+        return ""
+
     async def compute_similarities(self, query: str):
         chosen_types = ["class_definition", "function_definition", "markdown"]
         chunks_with_embeddings_df = cast(
@@ -429,9 +435,14 @@ class InferencePipeline:
         )
         return top_chunks, top_chunk_with_imports
 
-    async def get_response(self, query: str):
-        top_chunks, _ = await self.compute_similarities(query=query)
-        async for sample_response in ask_gpt(query, context="\n".join(top_chunks[:2])):
+    async def get_response(
+        self, query: str, messages: list[ChatCompletionMessageParam], model: str
+    ):
+        user_latest_prompt = await self.get_latest_prompt(messages)
+        top_chunks, _ = await self.compute_similarities(query=user_latest_prompt)
+        async for sample_response in ask_gpt(
+            messages, context="\n".join(top_chunks[:2]), model=model
+        ):
             await asyncio.sleep(0.01)
             str_resp = sample_response.model_dump_json() + "\n"
             await log.ainfo("str_resp", str_resp=str_resp)
@@ -446,4 +457,12 @@ if __name__ == "__main__":
     )
     pipeline.clone_and_process_repo()
     query = "Write python function to read a HTML file and transform it into text using Langchain"
-    pipeline.get_response(query=query)
+    messages: list[ChatCompletionMessageParam] = [
+        {
+            "role": "system",
+            "content": "You are an expert programmer",
+        },
+        {"role": "user", "content": query},
+    ]
+    model = "gpt-3.5-turbo"
+    pipeline.get_response(query=query, messages=messages, model=model)
