@@ -90,8 +90,8 @@ async def read_and_chunk_python_document(document_path: str, sem: asyncio.Semaph
     parser = TreeSitterPythonParser(document=document)
     [chunks, main_code, import_statements] = await asyncio.gather(
         asyncio.to_thread(parser.create_chunks),
-        asyncio.to_thread(parser.extract_main_code),
-        asyncio.to_thread(parser.extract_import_statements),
+        asyncio.to_thread(parser.extract_main_code),  # type: ignore
+        asyncio.to_thread(parser.extract_import_statements),  # type: ignore
     )
     chunks_df = pd.DataFrame(chunks)
     new_rows = pd.DataFrame(
@@ -285,7 +285,7 @@ async def ask_gpt(
     context: str,
     model: str,
     repo_url: str,
-    similarity_scores: str,
+    similarity_scores: list[FloatNDArray],
 ):
     messages = create_message(query, messages, context)
     response = await openai.chat.completions.create(
@@ -298,7 +298,7 @@ async def ask_gpt(
             "query": query,
             "chunks": {"top_chunks": context, "similarity_scores": similarity_scores},
         },
-    )
+    )  # type: ignore
     async for chunk in response:
         yield chunk
 
@@ -497,4 +497,4 @@ if __name__ == "__main__":
         {"role": "user", "content": query},
     ]
     model = "gpt-3.5-turbo"
-    pipeline.get_response(query=query, messages=messages, model=model)
+    pipeline.get_response(messages=messages, model=model)

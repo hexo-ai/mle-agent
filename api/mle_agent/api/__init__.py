@@ -54,12 +54,13 @@ async def lifespan(_: FastAPI):
 class AskRequest(BaseModel):
     repo_url: str
     branch: str | None = None
-    query: str
     start_index_folder_path: str = ""
     id: str | None = None
     response_id: str | None = None
     messages: list[ChatCompletionMessageParam]
     model: str
+    userId: str
+    username: str
 
 
 class AskResponseContext(BaseModel):
@@ -90,7 +91,7 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
         yield serialised_chunk
 
     async for chunk in pipeline.get_response(
-        query=request.query, messages=request.messages , model=request.model
+        messages=request.messages, model=request.model
     ):
         yield chunk
 
