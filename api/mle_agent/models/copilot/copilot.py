@@ -241,13 +241,17 @@ def compute_cosine_similarity(
     return similarities
 
 
-def create_message(messages: list[ChatCompletionMessageParam], context: str):
+def create_message(
+    query: str, messages: list[ChatCompletionMessageParam], context: str
+):
+    content = f"Respond to the query based on the provided context.\
+                If the query involves writing code, keep the code concise. \
+                Write code only for what the user has asked for \
+                Query: {query} \n Context: {context} \n"
+
     for message in reversed(messages):
         if message["role"] == "user":
-            if isinstance(message["content"], str):
-                message["content"] += context
-            elif message["content"] is None:
-                message["content"] = context
+            message["content"] = content
             break
 
     return messages
@@ -275,8 +279,10 @@ def add_imports_to_code(imports: list[str], code: str):
     return import_str + "\n" + code
 
 
-async def ask_gpt(messages: list[ChatCompletionMessageParam], context: str, model: str):
-    messages = create_message(messages, context)
+async def ask_gpt(
+    query: str, messages: list[ChatCompletionMessageParam], context: str, model: str
+):
+    messages = create_message(query, messages, context)
     response = await openai.chat.completions.create(
         model=model, messages=messages, temperature=0, stream=True
     )
@@ -441,7 +447,7 @@ class InferencePipeline:
         user_latest_prompt = await self.get_latest_prompt(messages)
         top_chunks, _ = await self.compute_similarities(query=user_latest_prompt)
         async for sample_response in ask_gpt(
-            messages, context="\n".join(top_chunks[:2]), model=model
+            user_latest_prompt, messages, context="\n".join(top_chunks[:2]), model=model
         ):
             await asyncio.sleep(0.01)
             str_resp = sample_response.model_dump_json() + "\n"
