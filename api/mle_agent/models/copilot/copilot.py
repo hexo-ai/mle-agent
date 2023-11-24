@@ -280,11 +280,24 @@ def add_imports_to_code(imports: list[str], code: str):
 
 
 async def ask_gpt(
-    query: str, messages: list[ChatCompletionMessageParam], context: str, model: str
+    query: str,
+    messages: list[ChatCompletionMessageParam],
+    context: str,
+    model: str,
+    repo_url: str,
+    similarity_scores: str,
 ):
     messages = create_message(query, messages, context)
     response = await openai.chat.completions.create(
-        model=model, messages=messages, temperature=0, stream=True
+        model=model,
+        messages=messages,
+        temperature=0,
+        stream=True,
+        metadata={
+            "repo_url": repo_url,
+            "query": query,
+            "chunks": {"top_chunks": context, "similarity_scores": similarity_scores},
+        },
     )
     async for chunk in response:
         yield chunk
@@ -414,7 +427,7 @@ class InferencePipeline:
                 return str(message["content"])
         return ""
 
-    async def compute_similarities(self, query: str):
+    async def compute_similarities(self, query: str, top_n: int):
         chosen_types = ["class_definition", "function_definition", "markdown"]
         chunks_with_embeddings_df = cast(
             pd.DataFrame, self.corpus_df[self.corpus_df["type"].isin(chosen_types)]
@@ -433,21 +446,34 @@ class InferencePipeline:
         ).astype(float)
         query_embedding = await create_query_embedding(query, "text-embedding-ada-002")
         chunks = chunks_with_embeddings_df["code"].tolist()
-        top_chunks, _ = get_top_chunks(
+        top_chunks, top_chunks_similarity_scores = get_top_chunks(
             chunks, chunk_embeddings, query_embedding, top_n=3
         )
         top_chunk_with_imports = add_imports_to_code(
             imports=chunks_with_import_statements["code"].tolist(), code=top_chunks[0]
         )
-        return top_chunks, top_chunk_with_imports
+        return top_chunks, top_chunks_similarity_scores, top_chunk_with_imports
 
     async def get_response(
-        self, query: str, messages: list[ChatCompletionMessageParam], model: str
+        self,
+
+        messages: list[ChatCompletionMessageParam],
+        model: str,
+        top_n=3,
     ):
         user_latest_prompt = await self.get_latest_prompt(messages)
-        top_chunks, _ = await self.compute_similarities(query=user_latest_prompt)
+        (
+            top_chunks,
+            top_chunks_similarity_scores,
+            top_chunk_with_imports,
+        ) = await self.compute_similarities(query=user_latest_prompt, top_n=top_n)
         async for sample_response in ask_gpt(
-            user_latest_prompt, messages, context="\n".join(top_chunks[:2]), model=model
+            user_latest_prompt,
+            messages,
+            context="\n".join(top_chunks[:2]),
+            model=model,
+            repo_url=self.repo_url,
+            similarity_scores=top_chunks_similarity_scores[:2],
         ):
             await asyncio.sleep(0.01)
             str_resp = sample_response.model_dump_json() + "\n"
