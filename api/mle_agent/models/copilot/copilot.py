@@ -242,8 +242,9 @@ def compute_cosine_similarity(
 
 
 def create_message(
-    query: str, messages: list[ChatCompletionMessageParam], context: str
+    query: str, messages: list[ChatCompletionMessageParam], top_chunks: list[str]
 ):
+    context = "\n".join(top_chunks)
     content = f"Respond to the query based on the provided context.\
                 If the query involves writing code, keep the code concise. \
                 Write code only for what the user has asked for \
@@ -282,12 +283,12 @@ def add_imports_to_code(imports: list[str], code: str):
 async def ask_gpt(
     query: str,
     messages: list[ChatCompletionMessageParam],
-    context: str,
+    top_chunks: list[str],
     model: str,
     repo_url: str,
     similarity_scores: list[FloatNDArray],
 ):
-    messages = create_message(query, messages, context)
+    messages = create_message(query, messages, top_chunks=top_chunks)
     response = await openai.chat.completions.create(
         model=model,
         messages=messages,
@@ -296,7 +297,7 @@ async def ask_gpt(
         metadata={
             "repo_url": repo_url,
             "query": query,
-            "chunks": {"top_chunks": context, "similarity_scores": similarity_scores},
+            "chunks": {"top_chunks": top_chunks, "similarity_scores": similarity_scores},
         },
     )  # type: ignore
     async for chunk in response:
@@ -456,7 +457,6 @@ class InferencePipeline:
 
     async def get_response(
         self,
-
         messages: list[ChatCompletionMessageParam],
         model: str,
         top_n=3,
@@ -470,7 +470,7 @@ class InferencePipeline:
         async for sample_response in ask_gpt(
             user_latest_prompt,
             messages,
-            context="\n".join(top_chunks[:2]),
+            top_chunks=top_chunks[:2],
             model=model,
             repo_url=self.repo_url,
             similarity_scores=top_chunks_similarity_scores[:2],
