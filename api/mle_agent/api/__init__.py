@@ -13,6 +13,8 @@ from openai.types.chat import ChatCompletionChunk
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
 from pydantic import BaseModel
+from langfuse import Langfuse
+from langfuse.model import CreateTrace
 
 from ..helpers import log
 from ..models import LLM, InferencePipeline
@@ -59,8 +61,9 @@ class AskRequest(BaseModel):
     response_id: str | None = None
     messages: list[ChatCompletionMessageParam]
     model: str
-    userId: str
+    convId: str
     username: str
+    userEmail: str
 
 
 class AskResponseContext(BaseModel):
@@ -72,6 +75,22 @@ class AskResponse(BaseModel):
     context: AskResponseContext
 
 
+async def langfuse_trace(userId: str, username: str, userEmail: str):
+    langfuse = Langfuse()
+    trace = langfuse.trace(
+        CreateTrace(
+            # optional, if you want to use your own id
+            id=userId,
+            userId=userId,
+            metadata={
+                "env": "prod",
+                "user": username,
+                "email": userEmail,
+            },
+        )  # type: ignore
+    )
+
+
 async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
     pipeline = InferencePipeline(
         repo_url=request.repo_url,
@@ -81,6 +100,7 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
 
     async for content in pipeline.clone_and_process_repo():
         await asyncio.sleep(0.2)
+        await langfuse_trace(request.convId, request.username, request.userEmail)
 
         serialised_chunk = create_serialised_chunk(
             id="repoProcess-",
@@ -91,7 +111,7 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
         yield serialised_chunk
 
     async for chunk in pipeline.get_response(
-        messages=request.messages, model=request.model
+        messages=request.messages, model=request.model, user_id=request.convId
     ):
         yield chunk
 

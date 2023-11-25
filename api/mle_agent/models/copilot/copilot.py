@@ -287,6 +287,7 @@ async def ask_gpt(
     model: str,
     repo_url: str,
     similarity_scores: list[FloatNDArray],
+    trace_id: str,
 ):
     messages = create_message(query, messages, top_chunks=top_chunks)
     response = await openai.chat.completions.create(
@@ -297,8 +298,12 @@ async def ask_gpt(
         metadata={
             "repo_url": repo_url,
             "query": query,
-            "chunks": {"top_chunks": top_chunks, "similarity_scores": similarity_scores},
+            "chunks": {
+                "top_chunks": top_chunks,
+                "similarity_scores": similarity_scores,
+            },
         },
+        trace_id=trace_id
     )  # type: ignore
     async for chunk in response:
         yield chunk
@@ -459,6 +464,7 @@ class InferencePipeline:
         self,
         messages: list[ChatCompletionMessageParam],
         model: str,
+        user_id: str,
         top_n=3,
     ):
         user_latest_prompt = await self.get_latest_prompt(messages)
@@ -474,6 +480,7 @@ class InferencePipeline:
             model=model,
             repo_url=self.repo_url,
             similarity_scores=top_chunks_similarity_scores[:2],
+            trace_id=user_id
         ):
             await asyncio.sleep(0.01)
             str_resp = sample_response.model_dump_json() + "\n"
@@ -497,4 +504,4 @@ if __name__ == "__main__":
         {"role": "user", "content": query},
     ]
     model = "gpt-3.5-turbo"
-    pipeline.get_response(messages=messages, model=model)
+    pipeline.get_response(messages=messages, model=model,user_id="testing")
