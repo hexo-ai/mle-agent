@@ -56,9 +56,6 @@ async def lifespan(_: FastAPI):
 class AskRequest(BaseModel):
     repo_url: str
     branch: str | None = None
-    start_index_folder_path: str = ""
-    id: str | None = None
-    response_id: str | None = None
     messages: list[ChatCompletionMessageParam]
     model: str
     convId: str
@@ -95,7 +92,6 @@ async def get_response(request: AskRequest) -> AsyncGenerator[str, None]:
     pipeline = InferencePipeline(
         repo_url=request.repo_url,
         branch=request.branch,
-        start_index_folder_path=request.start_index_folder_path,
     )
 
     async for content in pipeline.clone_and_process_repo():
@@ -135,7 +131,6 @@ def init_api() -> FastAPI:
     @app.post("/chat/ask")
     async def ask(request: AskRequest) -> StreamingResponse:
         log.info(request.repo_url)
-        log.info(request.start_index_folder_path)
         log.info(request.model)
 
         return StreamingResponse(
