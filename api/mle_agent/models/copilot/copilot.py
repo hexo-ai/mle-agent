@@ -303,7 +303,7 @@ async def ask_gpt(
                 "similarity_scores": similarity_scores,
             },
         },
-        trace_id=trace_id
+        trace_id=trace_id,
     )  # type: ignore
     async for chunk in response:
         yield chunk
@@ -388,7 +388,7 @@ class InferencePipeline:
 
         yield "Creating embeddings...\n\n"
 
-        batch_size = 100
+        batch_size = 300
         code_inputs = chunks_with_embeddings_df["code"].tolist()
         batches: list[list[str]] = [
             code_inputs[batch_start : batch_start + batch_size]
@@ -480,7 +480,7 @@ class InferencePipeline:
             model=model,
             repo_url=self.repo_url,
             similarity_scores=top_chunks_similarity_scores[:2],
-            trace_id=user_id
+            trace_id=user_id,
         ):
             await asyncio.sleep(0.01)
             str_resp = sample_response.model_dump_json() + "\n"
@@ -504,4 +504,4 @@ if __name__ == "__main__":
         {"role": "user", "content": query},
     ]
     model = "gpt-3.5-turbo"
-    pipeline.get_response(messages=messages, model=model,user_id="testing")
+    pipeline.get_response(messages=messages, model=model, user_id="testing")
