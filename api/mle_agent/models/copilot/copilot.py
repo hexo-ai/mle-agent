@@ -13,6 +13,7 @@ corpus_df = pd.concat([corpus_df, chunks_with_embeddings_df, chunks_without_embe
 import asyncio
 import glob
 import json
+import ast
 import textwrap
 from pathlib import Path
 from typing import Any, AsyncGenerator, Literal, cast
@@ -31,11 +32,101 @@ from ...helpers import log
 from ...libs.openai import openai_client as openai
 from .scripts.code_parser import TreeSitterPythonParser
 
+from qdrant_client import AsyncQdrantClient, models
+from mle_agent.config import get_settings
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 FloatNDArray = np.ndarray[Any, np.dtype[np.float16]]
+
+qdrant_client = AsyncQdrantClient(
+    url="https://2eef44b7-6297-4c9d-8387-c6fbd796c408.ap-southeast-1-0.aws.cloud.qdrant.io:6333",
+    api_key=get_settings().qdrant_api_key,
+)
+
+
+async def get_chunks_qdrant(
+    query_embedding: list[float], collection_name: str, top_n: int
+):
+    points = await qdrant_client.search(
+        collection_name=collection_name,
+        query_vector=query_embedding,
+        limit=top_n,
+    )
+    top_chunks = []
+    top_chunks_similarity_scores = []
+
+    for point in points:
+        top_chunk = point.payload.get("code", "")
+        top_chunks.append(top_chunk)
+
+        top_chunks_similarity_score = point.score
+        top_chunks_similarity_scores.append(top_chunks_similarity_score)
+
+    return top_chunks, top_chunks_similarity_scores
+
+
+async def add_data_to_qdrant(
+    repo_path: str, repo_name: str, embeddings: list[list[float]]
+):
+    # Define your collection name and vector size
+    for embedding in embeddings:
+        vector_size = len(embedding)
+        log.info(vector_size)
+        break
+
+    collection_name = repo_name
+
+    # Create the collection
+    await qdrant_client.create_collection(
+        collection_name=collection_name,
+        vectors_config=models.VectorParams(
+            size=vector_size, distance=models.Distance.COSINE
+        ),
+    )
+
+    repo_embedding_path = repo_path
+    data = pd.read_csv(repo_embedding_path)
+
+    # Create records and upload to the collection
+    points = []
+    for (index, row), embedding in zip(data.iterrows(), embeddings):
+        point = models.PointStruct(
+            id=index,  # or some other unique identifier
+            vector=embedding,  # Assuming "embedding" contains the vector data
+            payload={
+                "code": row["code"],
+                "start_line_num": row["start_line_num"],
+                "end_line_num": row["end_line_num"],
+                "type": row["type"],
+                "file_path": row["file_path"],
+            },
+        )
+        points.append(point)
+
+    # Upload records to the collection
+    try:
+        await qdrant_client.upsert(collection_name=collection_name, points=points)
+
+    except Exception as e:  # Catching a general exception
+        # Log the type and message of the exception
+        log.info(f"Caught an exception of type: {type(e)}")
+        log.info(f"Exception message: {e}")
+
+        # Log additional details if available
+        if hasattr(e, "response"):
+            log.info(f"Response content: {e.response.content}")
+        if hasattr(e, "body"):
+            log.info(f"Response body: {e.body}")
+        if hasattr(e, "headers"):
+            log.info(f"Response headers: {e.headers}")
+
+        # Re-raise the exception if you want it to propagate
+        raise e
+
+    return
 
 
 async def try_clone_repository(
@@ -225,7 +316,7 @@ async def create_query_embedding(query: str, embedding_model_name: str):
             embeddings = list(em[0])
             break
     query_embedding: FloatNDArray = np.array(embeddings).astype(float).reshape(1, -1)
-    return query_embedding
+    return query_embedding, embeddings
 
 
 def compute_cosine_similarity(
@@ -342,90 +433,97 @@ class InferencePipeline:
             *urlparse(self.repo_url).path.split(".")[0].split("/")[1:3],
         )
         repo_embedding_path = repo_path / "embeddings.csv"
-        if await aiofiles.os.path.exists(repo_embedding_path):
-            self.corpus_df = pd.read_csv(repo_embedding_path)
+        repo_name = "-".join(urlparse(self.repo_url).path.split(".")[0].split("/")[1:3])
+        try:
+            await qdrant_client.get_collection(repo_name)
             yield "Loaded repo...\n\n"
             yield ""
             return
+        except Exception as e:
+            log.info("Collection does not exist")
+            # Code to execute if the collection does not exist, e.g., create the collection
+            await log.ainfo("corpus_df", corpus_df=self.corpus_df)
 
-        await log.ainfo("corpus_df", corpus_df=self.corpus_df)
+            yield "Loading and processing repo...\n\n"
 
-        yield "Loading and processing repo...\n\n"
+            await shallow_clone_repository(
+                repo_url=self.repo_url,
+                repo_path=repo_path,
+                branch=self.branch,
+            )
 
-        await shallow_clone_repository(
-            repo_url=self.repo_url,
-            repo_path=repo_path,
-            branch=self.branch,
-        )
+            yield "Cloned repo...\n\n"
 
-        yield "Cloned repo...\n\n"
+            await asyncio.sleep(0.5)
 
-        await asyncio.sleep(0.5)
+            yield "Processing repo...\n\n"
 
-        yield "Processing repo...\n\n"
+            all_python_chunks_df = await read_and_chunk_all_python_files(
+                directory_path=repo_path
+            )
+            all_markdown_chunks_df = await read_and_chunk_all_markdown_files(
+                directory_path=repo_path
+            )
 
-        all_python_chunks_df = await read_and_chunk_all_python_files(
-            directory_path=repo_path
-        )
-        all_markdown_chunks_df = await read_and_chunk_all_markdown_files(
-            directory_path=repo_path
-        )
+            all_chunks_df = pd.concat([all_python_chunks_df, all_markdown_chunks_df])
 
-        all_chunks_df = pd.concat([all_python_chunks_df, all_markdown_chunks_df])
+            yield "Chunked repo...\n\n"
 
-        yield "Chunked repo...\n\n"
+            await log.ainfo("all_chunks_df", all_chunks_df=all_python_chunks_df)
 
-        await log.ainfo("all_chunks_df", all_chunks_df=all_python_chunks_df)
+            chosen_types = ["class_definition", "function_definition", "markdown"]
 
-        chosen_types = ["class_definition", "function_definition", "markdown"]
+            chunks_with_embeddings_df = all_chunks_df[
+                all_chunks_df["type"].isin(chosen_types)
+            ]
+            chunks_without_embeddings_df = all_chunks_df[
+                ~all_chunks_df["type"].isin(chosen_types)
+            ]
 
-        chunks_with_embeddings_df = all_chunks_df[
-            all_chunks_df["type"].isin(chosen_types)
-        ]
-        chunks_without_embeddings_df = all_chunks_df[
-            ~all_chunks_df["type"].isin(chosen_types)
-        ]
+            yield "Creating embeddings...\n\n"
 
-        yield "Creating embeddings...\n\n"
+            batch_size = 300
+            code_inputs = chunks_with_embeddings_df["code"].tolist()
+            batches: list[list[str]] = [
+                code_inputs[batch_start : batch_start + batch_size]
+                for batch_start in range(0, len(code_inputs), batch_size)
+            ]
+            no_of_batches = len(batches)
+            await log.ainfo(
+                "batches", batches=[len(batch) for batch in batches], len=len(batches)
+            )
 
-        batch_size = 300
-        code_inputs = chunks_with_embeddings_df["code"].tolist()
-        batches: list[list[str]] = [
-            code_inputs[batch_start : batch_start + batch_size]
-            for batch_start in range(0, len(code_inputs), batch_size)
-        ]
-        no_of_batches = len(batches)
-        await log.ainfo(
-            "batches", batches=[len(batch) for batch in batches], len=len(batches)
-        )
+            async for em, status in create_openai_embeddings(
+                batches,
+                "text-embedding-ada-002",
+            ):
+                if status == "done":
+                    chunks_with_embeddings_df.loc[:, "embedding"] = em
+                    break
+                yield f"Embedding: Batch {int(round(len(em)/batch_size, batch_size))} / {no_of_batches} in progress...\n\n"
 
-        async for em, status in create_openai_embeddings(
-            batches,
-            "text-embedding-ada-002",
-        ):
-            if status == "done":
-                chunks_with_embeddings_df.loc[:, "embedding"] = em
-                break
-            yield f"Embedding: Batch {int(round(len(em)/batch_size, batch_size))} / {no_of_batches} in progress...\n\n"
+            yield "Created embeddings...\n\n"
 
-        yield "Created embeddings...\n\n"
+            # indicate end of repo processing
+            yield ""
 
-        # indicate end of repo processing
-        yield ""
+            self.corpus_df = pd.concat(
+                [
+                    df
+                    for df in [
+                        self.corpus_df,
+                        chunks_with_embeddings_df,
+                        chunks_without_embeddings_df,
+                    ]
+                    if not df.empty
+                ],
+                ignore_index=True,
+            )
+            self.corpus_df.to_csv(repo_embedding_path, index=False)
 
-        self.corpus_df = pd.concat(
-            [
-                df
-                for df in [
-                    self.corpus_df,
-                    chunks_with_embeddings_df,
-                    chunks_without_embeddings_df,
-                ]
-                if not df.empty
-            ],
-            ignore_index=True,
-        )
-        self.corpus_df.to_csv(repo_embedding_path, index=False)
+            await add_data_to_qdrant(
+                repo_path=repo_embedding_path, repo_name=repo_name, embeddings=em
+            )
 
     async def get_latest_prompt(self, messages: list[ChatCompletionMessageParam]):
         for message in reversed(messages):
@@ -433,7 +531,7 @@ class InferencePipeline:
                 return str(message["content"])
         return ""
 
-    async def compute_similarities(self, query: str, top_n: int):
+    async def compute_similarities(self, query: str, top_n: int, collection_name: str):
         chosen_types = ["class_definition", "function_definition", "markdown"]
         chunks_with_embeddings_df = cast(
             pd.DataFrame, self.corpus_df[self.corpus_df["type"].isin(chosen_types)]
@@ -450,10 +548,13 @@ class InferencePipeline:
         chunk_embeddings = np.array(
             chunks_with_embeddings_df["embedding"].apply(parse_embedding).tolist()
         ).astype(float)
-        query_embedding = await create_query_embedding(query, "text-embedding-ada-002")
+        query_embedding, embeddings = await create_query_embedding(
+            query, "text-embedding-ada-002"
+        )
         chunks = chunks_with_embeddings_df["code"].tolist()
-        top_chunks, top_chunks_similarity_scores = get_top_chunks(
-            chunks, chunk_embeddings, query_embedding, top_n=3
+        # top_chunks, top_chunks_similarity_scores = get_top_chunks(chunks, chunk_embeddings, query_embedding, top_n=3)
+        top_chunks, top_chunks_similarity_scores = await get_chunks_qdrant(
+            embeddings, collection_name, top_n
         )
         top_chunk_with_imports = add_imports_to_code(
             imports=chunks_with_import_statements["code"].tolist(), code=top_chunks[0]
@@ -468,11 +569,14 @@ class InferencePipeline:
         top_n=3,
     ):
         user_latest_prompt = await self.get_latest_prompt(messages)
+        repo_name = "-".join(urlparse(self.repo_url).path.split(".")[0].split("/")[1:3])
         (
             top_chunks,
             top_chunks_similarity_scores,
             top_chunk_with_imports,
-        ) = await self.compute_similarities(query=user_latest_prompt, top_n=top_n)
+        ) = await self.compute_similarities(
+            query=user_latest_prompt, top_n=top_n, collection_name=repo_name
+        )
         async for sample_response in ask_gpt(
             user_latest_prompt,
             messages,
@@ -484,7 +588,7 @@ class InferencePipeline:
         ):
             await asyncio.sleep(0.01)
             str_resp = sample_response.model_dump_json() + "\n"
-            await log.ainfo("str_resp", str_resp=str_resp)
+            # await log.ainfo("str_resp", str_resp=str_resp)
             yield str_resp
 
 
