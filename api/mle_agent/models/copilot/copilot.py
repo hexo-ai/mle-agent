@@ -18,6 +18,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, AsyncGenerator, Literal, cast
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import aiofiles
 import aiofiles.os
@@ -59,8 +60,9 @@ async def get_chunks_qdrant(
     top_chunks_similarity_scores = []
 
     for point in points:
-        top_chunk = point.payload.get("code", "")
-        top_chunks.append(top_chunk)
+        if point.payload is not None:
+            top_chunk = point.payload.get("code", "")
+            top_chunks.append(top_chunk)
 
         top_chunks_similarity_score = point.score
         top_chunks_similarity_scores.append(top_chunks_similarity_score)
@@ -68,19 +70,20 @@ async def get_chunks_qdrant(
     return top_chunks, top_chunks_similarity_scores
 
 
+async def upsert_point(qdrant_client, collection_name, point):
+    await qdrant_client.upsert(collection_name=collection_name, points=[point])
+
+
 async def add_data_to_qdrant(
     repo_path: str, repo_name: str, embeddings: list[list[float]]
 ):
     # Define your collection name and vector size
-    for embedding in embeddings:
-        vector_size = len(embedding)
-        log.info(vector_size)
-        break
-
+    vector_size = len(embeddings[0]) if embeddings else 0
+    log.info(str(vector_size))
     collection_name = repo_name
 
     # Create the collection
-    await qdrant_client.create_collection(
+    await qdrant_client.recreate_collection(
         collection_name=collection_name,
         vectors_config=models.VectorParams(
             size=vector_size, distance=models.Distance.COSINE
@@ -89,42 +92,27 @@ async def add_data_to_qdrant(
 
     repo_embedding_path = repo_path
     data = pd.read_csv(repo_embedding_path)
+    row_count = data["embedding"].count()
+    log.info(f"The DataFrame has {row_count} rows")
 
-    # Create records and upload to the collection
-    points = []
+    # Create tasks for each record to upload to the collection
+    tasks = []
     for (index, row), embedding in zip(data.iterrows(), embeddings):
         point = models.PointStruct(
-            id=index,  # or some other unique identifier
-            vector=embedding,  # Assuming "embedding" contains the vector data
+            id=str(uuid4()),
+            vector=embedding,
             payload={
                 "code": row["code"],
                 "start_line_num": row["start_line_num"],
                 "end_line_num": row["end_line_num"],
                 "type": row["type"],
-                "file_path": row["file_path"],
             },
         )
-        points.append(point)
+        task = upsert_point(qdrant_client, collection_name, point)
+        tasks.append(task)
 
-    # Upload records to the collection
-    try:
-        await qdrant_client.upsert(collection_name=collection_name, points=points)
-
-    except Exception as e:  # Catching a general exception
-        # Log the type and message of the exception
-        log.info(f"Caught an exception of type: {type(e)}")
-        log.info(f"Exception message: {e}")
-
-        # Log additional details if available
-        if hasattr(e, "response"):
-            log.info(f"Response content: {e.response.content}")
-        if hasattr(e, "body"):
-            log.info(f"Response body: {e.body}")
-        if hasattr(e, "headers"):
-            log.info(f"Response headers: {e.headers}")
-
-        # Re-raise the exception if you want it to propagate
-        raise e
+    # Run all tasks concurrently
+    await asyncio.gather(*tasks)
 
     return
 
@@ -492,7 +480,6 @@ class InferencePipeline:
             await log.ainfo(
                 "batches", batches=[len(batch) for batch in batches], len=len(batches)
             )
-
             async for em, status in create_openai_embeddings(
                 batches,
                 "text-embedding-ada-002",
@@ -520,9 +507,8 @@ class InferencePipeline:
                 ignore_index=True,
             )
             self.corpus_df.to_csv(repo_embedding_path, index=False)
-
             await add_data_to_qdrant(
-                repo_path=repo_embedding_path, repo_name=repo_name, embeddings=em
+                repo_path=str(repo_embedding_path), repo_name=repo_name, embeddings=em
             )
 
     async def get_latest_prompt(self, messages: list[ChatCompletionMessageParam]):
@@ -556,10 +542,8 @@ class InferencePipeline:
         top_chunks, top_chunks_similarity_scores = await get_chunks_qdrant(
             embeddings, collection_name, top_n
         )
-        top_chunk_with_imports = add_imports_to_code(
-            imports=chunks_with_import_statements["code"].tolist(), code=top_chunks[0]
-        )
-        return top_chunks, top_chunks_similarity_scores, top_chunk_with_imports
+        # top_chunk_with_imports = add_imports_to_code(imports=chunks_with_import_statements["code"].tolist(), code=top_chunks[0])
+        return top_chunks, top_chunks_similarity_scores
 
     async def get_response(
         self,
@@ -573,7 +557,6 @@ class InferencePipeline:
         (
             top_chunks,
             top_chunks_similarity_scores,
-            top_chunk_with_imports,
         ) = await self.compute_similarities(
             query=user_latest_prompt, top_n=top_n, collection_name=repo_name
         )
