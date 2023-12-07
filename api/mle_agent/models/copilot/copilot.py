@@ -1,19 +1,6 @@
-"""
-The Objective of this script is to build an infernece pipeline which can do the following:
-7. Write the end to end logic involved as a function or class (NOT DONE)
-8. Wrap this whole thing into a Flask application (NOT DONE)
-9. Replace with OPENAI credits keys (NOT DONE)
-10. Replace conda environment. Check if  the following code works (NOT DONE)
-# Concatenate the dataframes and assign to corpus_df
-corpus_df = pd.concat([corpus_df, chunks_with_embeddings_df, chunks_without_embeddings_df], ignore_index=True)
-11. Fix long documents issue (HACKILY DONE)
-12. Add import statements from the file (NOT DONE)
-13. Integrate to a vector store (NOT DONE)
-"""
 import asyncio
 import glob
 import json
-import ast
 import textwrap
 from pathlib import Path
 from typing import Any, AsyncGenerator, Literal, cast
